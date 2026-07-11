@@ -1,0 +1,21 @@
+CONSTRAINTS (apply to every task):
+- NO SQLite or any DB engine. Flat files only. Final enriched output stays CSV.
+- Cache/state files must be APPEND-ONLY (no full-file rewrites) to scale to 100k+ files.
+- Do NOT touch .env, .gitignore, or secret handling. Leave credentials exactly as-is.
+- Only use the free/open providers already wired (iTunes, Deezer, MusicBrainz, Spotify,
+  Last.fm, Discogs, Cover Art Archive, AcoustID, Wikidata) + open-source local AI audio models.
+- Preserve dry-run-first safety, confidence scoring, and resume behavior.
+- Windows + Linux compatible. Keep the clean layered architecture.
+
+COMMAND 07 — Harden every HTTP/web provider against hangs & flakiness
+
+Harden tag_creator/clients/base.py and tag_creator/clients/web_discovery.py.
+- Cache robots.txt per host (with TTL) and add an explicit timeout to the robots fetch;
+  never let a slow host block the pipeline.
+- Enforce connect+read timeouts on ALL requests; add jittered exponential backoff.
+- Add a per-provider circuit breaker: after N consecutive failures, skip that provider for the
+  rest of the run and note it, so one broken source can't drag the batch down.
+- Use a shared pooled requests.Session per provider (HTTPAdapter with retries/pool size).
+- Treat the DuckDuckGo HTML scrape as best-effort: on parse failure, degrade gracefully to
+  other providers instead of raising.
+Acceptance: a dead/slow domain cannot stall a 10k-file run; failures are isolated and logged.

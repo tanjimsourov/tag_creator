@@ -1,0 +1,19 @@
+CONSTRAINTS (apply to every task):
+- NO SQLite or any DB engine. Flat files only. Final enriched output stays CSV.
+- Cache/state files must be APPEND-ONLY (no full-file rewrites) to scale to 100k+ files.
+- Do NOT touch .env, .gitignore, or secret handling. Leave credentials exactly as-is.
+- Only use the free/open providers already wired (iTunes, Deezer, MusicBrainz, Spotify,
+  Last.fm, Discogs, Cover Art Archive, AcoustID, Wikidata) + open-source local AI audio models.
+- Preserve dry-run-first safety, confidence scoring, and resume behavior.
+- Windows + Linux compatible. Keep the clean layered architecture.
+
+COMMAND 09 — Production logging, run summary & paid-cost guardrail
+
+Make the tool observable and cost-safe for unattended server runs.
+- Rewrite tag_creator/logging_setup.py: rotating file handler under logs/ + console, with an
+  optional JSON-structured format and a per-run correlation id.
+- Emit output/run_summary.json at the end: files scanned/updated/skipped/failed, per-provider
+  hit rate + avg latency + error count, paid calls used, wall-clock, worker count.
+- Add MAX_PAID_CALLS env + --max-paid-calls flag that HARD-STOPS the paid stage once reached,
+  and log every paid call. Also add a per-run cap on web_discovery fetches.
+Acceptance: a headless run leaves rotating logs + a machine-readable summary; paid usage is bounded.

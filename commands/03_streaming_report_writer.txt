@@ -1,0 +1,18 @@
+CONSTRAINTS (apply to every task):
+- NO SQLite or any DB engine. Flat files only. Final enriched output stays CSV.
+- Cache/state files must be APPEND-ONLY (no full-file rewrites) to scale to 100k+ files.
+- Do NOT touch .env, .gitignore, or secret handling. Leave credentials exactly as-is.
+- Only use the free/open providers already wired (iTunes, Deezer, MusicBrainz, Spotify,
+  Last.fm, Discogs, Cover Art Archive, AcoustID, Wikidata) + open-source local AI audio models.
+- Preserve dry-run-first safety, confidence scoring, and resume behavior.
+- Windows + Linux compatible. Keep the clean layered architecture.
+
+COMMAND 03 — Stream the enriched CSV incrementally (constant memory for huge libraries)
+
+Refactor tag_creator/reports.py + pipeline so the enriched CSV and JSONL are written INCREMENTALLY.
+- Open the report once, write the header, then append each file's row the moment it completes
+  (thread-safe append), flushing every N rows. Never hold all results in memory.
+- Support append/resume mode: re-running continues the same report instead of truncating it,
+  skipping files already present (path+mtime+size).
+- Keep the current column set intact so downstream CSV consumers don't break.
+Acceptance: constant memory for 100k+ files; the report survives an interrupted run.

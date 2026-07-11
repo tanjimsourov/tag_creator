@@ -1,0 +1,21 @@
+CONSTRAINTS (apply to every task):
+- NO SQLite or any DB engine. Flat files only. Final enriched output stays CSV.
+- Cache/state files must be APPEND-ONLY (no full-file rewrites) to scale to 100k+ files.
+- Do NOT touch .env, .gitignore, or secret handling. Leave credentials exactly as-is.
+- Only use the free/open providers already wired (iTunes, Deezer, MusicBrainz, Spotify,
+  Last.fm, Discogs, Cover Art Archive, AcoustID, Wikidata) + open-source local AI audio models.
+- Preserve dry-run-first safety, confidence scoring, and resume behavior.
+- Windows + Linux compatible. Keep the clean layered architecture.
+
+COMMAND 01 — Make the CSV store append-only & O(1) per write (kills the O(n^2) rewrite)
+
+Rewrite tag_creator/csv_store.py to be append-only and scale to 100k+ files WITHOUT SQLite.
+- api_cache, media_inventory, enrichment_state stay as CSV files but become APPEND-ONLY:
+  set_cache/upsert_media/save_enrichment append ONE new row and never rewrite the whole file.
+- On startup, stream-read each file once, building an in-memory last-wins index keyed by
+  (provider,cache_key) / path. Duplicate rows are tolerated; latest row wins.
+- Add compact() that rewrites a deduped file to a .tmp and atomically replaces it — call it
+  ONLY at close() or via an explicit --compact flag, never on the hot path.
+- Make every append thread-safe with a lock (a shared pipeline will call this from many threads).
+- Add a one-time migration that folds any existing state into the new format.
+Acceptance: a 10k-file run does O(1) appends per write, bounded memory, and resumes correctly.

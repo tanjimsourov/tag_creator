@@ -1,0 +1,26 @@
+CONSTRAINTS (apply to every task):
+- NO SQLite or any DB engine. Flat files only. Final enriched output stays CSV.
+- Cache/state files must be APPEND-ONLY (no full-file rewrites) to scale to 100k+ files.
+- Do NOT touch .env, .gitignore, or secret handling. Leave credentials exactly as-is.
+- Only use the free/open providers already wired (iTunes, Deezer, MusicBrainz, Spotify,
+  Last.fm, Discogs, Cover Art Archive, AcoustID, Wikidata) + open-source local AI audio models.
+- Preserve dry-run-first safety, confidence scoring, and resume behavior.
+- Windows + Linux compatible. Keep the clean layered architecture.
+
+COMMAND 06 — Get the best out of open-source AI models (fill bpm/key/genre/mood locally)
+
+Strengthen the open-source local AI enrichment in tag_creator/local_ai_runner.py +
+tag_creator/clients/local_ai_audio.py so the CSV gets rich tags with NO paid API.
+- Add Essentia ALGORITHMIC extractors (no model files needed, pure DSP):
+  * BPM via RhythmExtractor2013  * musical key+scale via KeyExtractor  * danceability.
+  These fill bpm/key/danceability that currently trigger the paid stage.
+- Add more open MTG-Jamendo/Essentia model heads reusing the SHARED Discogs-EffNet embedding
+  (compute the embedding ONCE per file, then run multiple prediction heads):
+  genre (discogs400), mood/theme (mtg_jamendo_moodtheme), instrument, voice/instrumental,
+  arousal/valence (emomusic/deam). Map results into genre/subgenre/mood/moods/instruments/
+  vocals/themes/energy/valence with confidence-weighted selection.
+- Robust label parsing, min-score gating, and a top-N summary written to analysis_summary/json.
+- Add scripts/download_models.py that fetches the open Essentia model zoo files with SHA256
+  checksums into models/local_ai/, and update docs/local_ai_models.md.
+Acceptance: with models installed, bpm/key/genre/mood/instrument fill from audio alone; the paid
+stage is rarely needed. Missing deps/models still skip cleanly per-file.

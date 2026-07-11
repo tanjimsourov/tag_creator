@@ -1,0 +1,23 @@
+CONSTRAINTS (apply to every task):
+- NO SQLite or any DB engine. Flat files only. Final enriched output stays CSV.
+- Cache/state files must be APPEND-ONLY (no full-file rewrites) to scale to 100k+ files.
+- Do NOT touch .env, .gitignore, or secret handling. Leave credentials exactly as-is.
+- Only use the free/open providers already wired (iTunes, Deezer, MusicBrainz, Spotify,
+  Last.fm, Discogs, Cover Art Archive, AcoustID, Wikidata) + open-source local AI audio models.
+- Preserve dry-run-first safety, confidence scoring, and resume behavior.
+- Windows + Linux compatible. Keep the clean layered architecture.
+
+COMMAND 10 — Packaging, pinned deps, CLI/Docker hardening (+ optional tests)
+
+Finish production packaging and CLI hardening.
+- Add pyproject.toml (project metadata, console_scripts entry point) and pin ALL deps to exact
+  versions in requirements.lock + requirements-ai.lock (keep the existing loose files for dev).
+- Expand scripts/enrich_library.py flags: --workers, --max-paid-calls, --backup-dir,
+  --check-config, --compact, --verify-after-write, plus clean SIGINT handling.
+- Docker: run as a non-root user, add a HEALTHCHECK, and wire scripts/download_models.py as an
+  optional build/run step. Keep the CPU-thread env controls.
+- Add a pytest suite (tests/) covering scoring.merge_metadata, matching.similarity/plausible
+  match, csv_store append+compact+resume, and config validation. Mark network/AI tests as
+  optional so `pytest -m "not integration"` runs offline. (Tests are optional to run — write them,
+  we validate on the server.)
+Acceptance: reproducible build, one-command server deploy, offline-runnable unit tests.

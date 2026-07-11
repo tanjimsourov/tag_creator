@@ -1,0 +1,19 @@
+CONSTRAINTS (apply to every task):
+- NO SQLite or any DB engine. Flat files only. Final enriched output stays CSV.
+- Cache/state files must be APPEND-ONLY (no full-file rewrites) to scale to 100k+ files.
+- Do NOT touch .env, .gitignore, or secret handling. Leave credentials exactly as-is.
+- Only use the free/open providers already wired (iTunes, Deezer, MusicBrainz, Spotify,
+  Last.fm, Discogs, Cover Art Archive, AcoustID, Wikidata) + open-source local AI audio models.
+- Preserve dry-run-first safety, confidence scoring, and resume behavior.
+- Windows + Linux compatible. Keep the clean layered architecture.
+
+COMMAND 05 — Atomic, backup-safe tag writing (protect thousands of irreplaceable files)
+
+Rewrite tag_creator/media.py write path to be crash-safe.
+- Write tags to a temp copy of the file, then atomically os.replace() over the original.
+- Collapse the MP3 EasyID3.save()+ID3.save() double-write into a SINGLE ID3 write pass.
+- Add optional --backup-dir: copy the original (preserving relative path) before any write.
+- Add --verify-after-write: re-read the file post-write and confirm the intended tags stuck;
+  report mismatches in the CSV status.
+- Batch all field mappings (mp3 + mp4) so each file is opened/saved once.
+Acceptance: killing the process mid-write always leaves either the original or a fully-valid file.

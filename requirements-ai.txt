@@ -1,0 +1,7 @@
+# Optional local AI dependencies.
+# Install only on the machine that will run open-source audio models.
+#
+# Windows support for Essentia TensorFlow can be limited depending on Python
+# version. If pip cannot install this package, use a Linux server/VM or Conda.
+essentia-tensorflow>=2.1b6.dev1110
+numpy>=1.26.0

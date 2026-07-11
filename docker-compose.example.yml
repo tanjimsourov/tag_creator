@@ -1,0 +1,28 @@
+services:
+  tag_creator:
+    build:
+      context: .
+      args:
+        INSTALL_LOCAL_AI: "false"
+    env_file:
+      - .env
+    environment:
+      TAG_CREATOR_CPU_THREADS: "${TAG_CREATOR_CPU_THREADS:-2}"
+      OMP_NUM_THREADS: "${TAG_CREATOR_CPU_THREADS:-2}"
+      OPENBLAS_NUM_THREADS: "${TAG_CREATOR_CPU_THREADS:-2}"
+      MKL_NUM_THREADS: "${TAG_CREATOR_CPU_THREADS:-2}"
+      VECLIB_MAXIMUM_THREADS: "${TAG_CREATOR_CPU_THREADS:-2}"
+      NUMEXPR_NUM_THREADS: "${TAG_CREATOR_CPU_THREADS:-2}"
+      TF_NUM_INTRAOP_THREADS: "${TAG_CREATOR_CPU_THREADS:-2}"
+      TF_NUM_INTEROP_THREADS: "${TAG_CREATOR_CPU_THREADS:-2}"
+    volumes:
+      - ../ftp_downloads/mp3:/app/media:ro
+      - ./data:/app/data
+      - ./output:/app/output
+      - ./models/local_ai:/app/models/local_ai:ro
+    command: ["--input-dir", "media", "--report", "output/enrichment_report.csv", "--dry-run"]
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 4G

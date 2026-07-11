@@ -1,0 +1,22 @@
+CONSTRAINTS (apply to every task):
+- NO SQLite or any DB engine. Flat files only. Final enriched output stays CSV.
+- Cache/state files must be APPEND-ONLY (no full-file rewrites) to scale to 100k+ files.
+- Do NOT touch .env, .gitignore, or secret handling. Leave credentials exactly as-is.
+- Only use the free/open providers already wired (iTunes, Deezer, MusicBrainz, Spotify,
+  Last.fm, Discogs, Cover Art Archive, AcoustID, Wikidata) + open-source local AI audio models.
+- Preserve dry-run-first safety, confidence scoring, and resume behavior.
+- Windows + Linux compatible. Keep the clean layered architecture.
+
+COMMAND 02 — Parallelize the pipeline with bounded workers (the biggest speed win)
+
+Add bounded concurrency across files in tag_creator/pipeline.py.
+- Process files with a ThreadPoolExecutor(max_workers=settings.worker_threads).
+- Keep per-provider rate limits correct: the existing RateLimiter.wait() (already lock-guarded)
+  serializes calls per provider across threads — reuse it, do not bypass it.
+- Ensure CsvStore appends are thread-safe (from command 01).
+- Add WORKER_THREADS env (default min(8, cpu_count)) and a --workers CLI flag in
+  scripts/enrich_library.py.
+- Handle KeyboardInterrupt/SIGINT gracefully: stop scheduling, let in-flight files finish, flush
+  the store, exit resume-safe. No half-written state.
+Acceptance: near-linear speedup up to the slowest per-provider rate limit; Ctrl-C leaves a
+resumable run.

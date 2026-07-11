@@ -1,0 +1,33 @@
+{
+  "report_path": "C:\\Users\\spicy\\AppData\\Local\\Temp\\claude\\c--Users-spicy-Documents-projects-smc-ds-local-hero-tag-creator\\025182cd-291f-46ca-9cd2-9cdce37bc4cc\\scratchpad\\e2e\\report.csv",
+  "total_files": 2,
+  "skipped": 0,
+  "written_rows": 2,
+  "interrupted": false,
+  "status_counts": {
+    "dry_run_done": 2
+  },
+  "provider_hits": {
+    "local_cleanup": 2,
+    "itunes": 2,
+    "spotify": 1,
+    "lastfm": 2,
+    "deezer": 1
+  },
+  "provider_errors": {},
+  "provider_latency_ms": {
+    "local_cleanup": 0.3,
+    "itunes": 0.5,
+    "deezer": 0.1,
+    "wikidata": 0.0,
+    "musicbrainz": 0.8,
+    "spotify": 1886.7,
+    "lastfm": 566.8,
+    "discogs": 1041.2,
+    "web_discovery": 21151.3
+  },
+  "paid_calls": 0,
+  "web_fetches": 0,
+  "duration_seconds": 25.398,
+  "workers": 2
+}

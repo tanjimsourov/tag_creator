@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tag-creator"
+version = "0.1.0"
+description = "Professional open-source metadata enrichment pipeline for large MP3/MP4 libraries (CSV-only, no database)."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "mutagen>=1.48.0",
+    "python-dotenv>=1.0.1",
+    "requests>=2.32.0",
+    "tqdm>=4.66.0",
+    "beautifulsoup4>=4.12.0",
+]
+
+[project.optional-dependencies]
+ai = [
+    "essentia-tensorflow>=2.1b6.dev1110",
+    "numpy>=1.26.0",
+]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+tag-creator = "tag_creator.cli:main"
+
+[tool.setuptools]
+packages = ["tag_creator", "tag_creator.clients"]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: tests that need network access or optional AI models (deselect with -m 'not integration')",
+]
+testpaths = ["tests"]
