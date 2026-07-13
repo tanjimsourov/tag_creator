@@ -136,12 +136,17 @@ def run_musicnn_mtg_jamendo(args: argparse.Namespace) -> dict[str, Any]:
     audio = _load_audio(args.audio, rate=16000)
     predictions = TensorflowPredictMusiCNN(graphFilename=str(args.prediction_model))(audio)
     labels = _load_labels(args.labels)
+    tags = _top_tags(predictions, labels, args.top_n)
+    # Flat autotagger: label vocabulary mixes genre/mood/instrument/vocals, so the
+    # mapper classifies by label, not head. Mark the source for provenance.
+    for tag in tags:
+        tag.setdefault("head", "msd_autotag")
     return {
         "provider": "musicnn_mtg_jamendo",
         "audio": str(args.audio),
         "prediction_model": str(args.prediction_model),
         "labels": str(args.labels),
-        "tags": _top_tags(predictions, labels, args.top_n),
+        "tags": tags,
     }
 
 

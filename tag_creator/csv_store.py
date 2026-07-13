@@ -127,21 +127,24 @@ class CsvStore:
             writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
             writer.writeheader()
 
-    @staticmethod
-    def _read_rows(path: Path) -> list[dict[str, str]]:
-        if not path.exists():
-            return []
-        with path.open(newline="", encoding="utf-8-sig") as csv_file:
-            return list(csv.DictReader(csv_file))
-
     def _load_index(
         self, path: Path, key_fn: Callable[[dict[str, str]], Any]
     ) -> tuple[dict[Any, dict[str, str]], int]:
-        rows = self._read_rows(path)
+        """Stream the file row-by-row into a last-wins index.
+
+        Only the deduplicated index is retained; the raw rows are never all held
+        in memory at once, so startup memory scales with the number of distinct
+        keys rather than the (possibly much larger) row count on disk.
+        """
         index: dict[Any, dict[str, str]] = {}
-        for row in rows:
-            index[key_fn(row)] = row
-        return index, len(rows)
+        row_count = 0
+        if not path.exists():
+            return index, row_count
+        with path.open(newline="", encoding="utf-8-sig") as csv_file:
+            for row in csv.DictReader(csv_file):
+                index[key_fn(row)] = row
+                row_count += 1
+        return index, row_count
 
     @staticmethod
     def _write_rows(path: Path, fieldnames: list[str], rows: list[dict[str, str]]) -> None:

@@ -199,6 +199,28 @@ def _validate_settings(settings: Settings) -> None:
         raise ConfigError("Invalid configuration:\n  - " + "\n  - ".join(problems))
 
     # Soft warnings — do not abort the run.
+    # A provider named in a stage list but absent from ENABLED_PROVIDERS is silently
+    # dropped from the client map; surface that so a mis-set .env is caught early.
+    enabled = set(settings.enabled_providers)
+    staged = (
+        set(settings.free_stage_providers)
+        | set(settings.web_stage_providers)
+        | set(settings.paid_stage_providers)
+        | set(settings.local_ai_stage_providers)
+        | {"local_cleanup"}
+    )
+    dropped = sorted(name for name in staged if name not in enabled)
+    if dropped:
+        LOGGER.warning(
+            "these stage providers are NOT in ENABLED_PROVIDERS and will be skipped: %s",
+            ", ".join(dropped),
+        )
+    if settings.paid_stage_providers and not any(
+        name in enabled for name in settings.free_stage_providers + settings.web_stage_providers
+    ):
+        LOGGER.warning(
+            "paid stage is enabled but no free/web providers are — paid APIs would run without a free-first pass"
+        )
     if not settings.input_dir.exists():
         LOGGER.warning("input directory does not exist yet: %s", settings.input_dir)
     if settings.local_ai_enabled:
@@ -250,6 +272,26 @@ def load_settings() -> Settings:
         "acoustid": 0.35,
         "genius": 0.25,
     }
+    free_stage = _list(
+        "FREE_STAGE_PROVIDERS",
+        ["local_cleanup", "itunes", "deezer", "wikidata", "acoustid", "musicbrainz", "spotify", "lastfm", "discogs", "genius", "cover_art_archive"],
+    )
+    web_stage = _list("WEB_STAGE_PROVIDERS", ["web_discovery", "rules_inference"])
+    paid_stage = _list("PAID_STAGE_PROVIDERS", ["sonoteller"])
+    local_ai_stage = _list(
+        "LOCAL_AI_STAGE_PROVIDERS",
+        ["essentia_features", "essentia_discogs_effnet", "musicnn_mtg_jamendo"],
+    )
+    # Default ENABLED_PROVIDERS = every provider that any stage references (+ local_cleanup).
+    # This guarantees a blank/minimal .env can never silently starve the free/web stages
+    # while leaving the PAID stage enabled — the exact footgun the old fixed list caused.
+    # Providers without an API key / model file self-skip via is_configured(), so enabling
+    # the full union is safe and cost-free.
+    enabled_default: list[str] = []
+    for _stage_name in ["local_cleanup", *free_stage, *local_ai_stage, *web_stage, *paid_stage]:
+        if _stage_name not in enabled_default:
+            enabled_default.append(_stage_name)
+
     settings = Settings(
         input_dir=resolve_path(os.environ.get("INPUT_DIR", "../ftp_downloads/mp3")),
         output_dir=resolve_path(os.environ.get("OUTPUT_DIR", "output")),
@@ -269,11 +311,11 @@ def load_settings() -> Settings:
         fill_unknown_values=_bool("FILL_UNKNOWN_VALUES", False),
         cpu_threads=max(1, _int("TAG_CREATOR_CPU_THREADS", 2)),
         worker_threads=max(1, _int("WORKER_THREADS", min(8, max(1, os.cpu_count() or 2)))),
-        enabled_providers=_list("ENABLED_PROVIDERS", ["local_cleanup", "sonoteller", "musicbrainz", "cover_art_archive"]),
-        free_stage_providers=_list("FREE_STAGE_PROVIDERS", ["local_cleanup", "itunes", "deezer", "musicbrainz", "cover_art_archive"]),
-        web_stage_providers=_list("WEB_STAGE_PROVIDERS", ["web_discovery", "rules_inference"]),
-        paid_stage_providers=_list("PAID_STAGE_PROVIDERS", ["sonoteller"]),
-        local_ai_stage_providers=_list("LOCAL_AI_STAGE_PROVIDERS", ["essentia_features", "essentia_discogs_effnet", "musicnn_mtg_jamendo"]),
+        enabled_providers=_list("ENABLED_PROVIDERS", enabled_default),
+        free_stage_providers=free_stage,
+        web_stage_providers=web_stage,
+        paid_stage_providers=paid_stage,
+        local_ai_stage_providers=local_ai_stage,
         hybrid_mode=_bool("HYBRID_MODE", True),
         paid_only_if_missing=_bool("PAID_ONLY_IF_MISSING", True),
         max_paid_calls=_int_or_none("MAX_PAID_CALLS"),

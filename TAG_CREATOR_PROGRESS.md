@@ -87,3 +87,39 @@ Next recommended tasks:
 7. Only then run `--write` on copied files first.
 8. To enable local AI, install `requirements-ai.txt`, place model files under `models/local_ai/`, then set `LOCAL_AI_ENABLED=true`.
 9. For server use, set `TAG_CREATOR_CPU_THREADS`, run `scripts\server_readiness.py`, then start with dry-run reports.
+
+## Production-hardening pass (2026-07-13)
+
+Focus: make everything strong, especially the local open-source AI models.
+
+- **Config footgun fixed.** `ENABLED_PROVIDERS` now defaults to the UNION of all
+  stage lists, so a blank `.env` can never silently starve the free/web stages
+  while leaving the paid stage on. Added a startup warning when a stage names a
+  provider that is not enabled. (`config.py`)
+- **Local AI mapping rewritten for full value capture (the key change).**
+  `local_ai_audio._field_map` is now taxonomy/head-driven instead of a tiny
+  keyword allowlist. Every real prediction is routed to the correct field:
+  Discogs genre400 `Parent---Child` -> genre + subgenre/style; mtg_jamendo
+  mood/theme head -> mood/moods/themes/occasion/season; mtg_jamendo instrument
+  head -> instruments/vocals; MSD 50-tag autotagger -> classified by label.
+  Previously-dropped values (e.g. genre "Trap", mood "epic") are now kept.
+- **Extra heads enabled out of the box.** `download_models.py` now fetches the
+  mood/theme + instrument heads by default, and `.env.example` sets
+  `ESSENTIA_EXTRA_HEADS` so the Discogs-EffNet provider fills genre + subgenre +
+  mood/theme + instruments in one embedding pass. (Set `ESSENTIA_EXTRA_HEADS` in
+  your real `.env` — it is not auto-edited.)
+- **csv_store startup is now truly streaming** (bounded memory on large caches).
+- **Packaging:** `pyproject.toml` uses `packages.find` (no manual list to drift).
+- **Tests: 20 -> 49, all passing offline (no network, no essentia, no real audio).**
+  New: `test_local_ai_mapping` (proves 100% field capture), `test_pipeline`
+  (merge/resume/PaidGuard/streaming report), `test_http_base` (retry/404-cache/
+  circuit breaker), `test_media` (tag write round-trip/atomic/backup/verify),
+  `test_reports` (streaming + resume), `test_config_providers` (enable-union +
+  warning). Shared hermetic fixtures in `tests/conftest.py`.
+- **CI added:** `.github/workflows/tag_creator-ci.yml` (byte-compile + offline
+  pytest; no secrets/network).
+
+Server validation still to run by owner: install `essentia-tensorflow` on a
+pinned Python 3.11/3.12, `python scripts/download_models.py`, set
+`LOCAL_AI_ENABLED=true` + `ESSENTIA_EXTRA_HEADS`, then a dry-run on ~20 files and
+review genre/subgenre/mood/moods/themes/instruments/vocals/bpm/key in the report.

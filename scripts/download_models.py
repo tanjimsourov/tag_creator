@@ -57,7 +57,7 @@ MODELS: dict[str, dict] = {
         "labels_json": f"{ZOO}/classification-heads/mtg_jamendo_moodtheme/mtg_jamendo_moodtheme-discogs-effnet-1.json",
         "labels_local": "mtg_jamendo_moodtheme-labels.txt",
         "sha256": None,
-        "core": False,
+        "core": True,
     },
     "instrument_head": {
         "url": f"{ZOO}/classification-heads/mtg_jamendo_instrument/mtg_jamendo_instrument-discogs-effnet-1.pb",
@@ -65,7 +65,7 @@ MODELS: dict[str, dict] = {
         "labels_json": f"{ZOO}/classification-heads/mtg_jamendo_instrument/mtg_jamendo_instrument-discogs-effnet-1.json",
         "labels_local": "mtg_jamendo_instrument-labels.txt",
         "sha256": None,
-        "core": False,
+        "core": True,
     },
 }
 

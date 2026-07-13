@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -18,108 +19,209 @@ def _sha256_payload(payload: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
 
-def _split_label(label: str) -> str:
+# ---------------------------------------------------------------------------
+# Model taxonomies (from the Essentia model-zoo label files these providers use)
+#
+# The mapping below routes EVERY real prediction into the correct tag field:
+#   * genre_discogs400 head  -> "Parent---Child" hierarchy (parent=genre, child=style)
+#   * mtg_jamendo_moodtheme   -> mood / theme / occasion / season
+#   * mtg_jamendo_instrument  -> instruments / vocals
+#   * msd-musicnn (50 tags)   -> flat labels classified by the sets below
+# Dedicated heads are trusted by their head name; the flat MSD model is classified
+# by known-label membership. Nothing a model predicts is silently thrown away.
+# ---------------------------------------------------------------------------
+
+_VOCAL_LABELS = {
+    "voice", "vocal", "vocals", "female vocalists", "male vocalists",
+    "female vocalist", "male vocalist", "choir", "a cappella",
+}
+
+_INSTRUMENT_LABELS = {
+    # mtg_jamendo_instrument head vocabulary
+    "accordion", "acousticbassguitar", "acousticguitar", "bass", "beat", "bell",
+    "bongo", "brass", "cello", "clarinet", "classicalguitar", "computer",
+    "doublebass", "drummachine", "drums", "electricguitar", "electricpiano",
+    "flute", "guitar", "harmonica", "harp", "horn", "keyboard", "orchestra",
+    "organ", "pad", "percussion", "piano", "pipeorgan", "rhodes", "sampler",
+    "saxophone", "strings", "synthesizer", "trombone", "trumpet", "viola",
+    "violin",
+    # MSD flat-tag instruments
+    "acoustic", "instrumental",
+}
+
+# Occasion / usage / setting -> themes (and a subset -> occasion / season)
+_THEME_LABELS = {
+    "action", "adventure", "advertising", "background", "children", "christmas",
+    "commercial", "corporate", "documentary", "drama", "film", "game", "holiday",
+    "movie", "nature", "party", "space", "sport", "summer", "trailer", "travel",
+    "wedding",
+}
+
+# Affective descriptors -> mood / moods
+_MOOD_LABELS = {
+    # mtg_jamendo_moodtheme affective classes
+    "ballad", "calm", "cool", "dark", "deep", "dramatic", "dream", "emotional",
+    "energetic", "epic", "fast", "fun", "funny", "groovy", "happy", "heavy",
+    "hopeful", "inspiring", "love", "meditative", "melancholic", "melodic",
+    "motivational", "positive", "powerful", "relaxing", "retro", "romantic",
+    "sad", "sexy", "slow", "soft", "soundscape", "upbeat", "uplifting",
+    # MSD flat-tag moods
+    "beautiful", "mellow", "chill", "chillout", "catchy", "easy listening",
+}
+
+# Flat MSD genre tags (Discogs head genres come through the "---" hierarchy path).
+_GENRE_LABELS = {
+    "rock", "pop", "alternative", "indie", "electronic", "dance", "alternative rock",
+    "jazz", "metal", "classic rock", "soul", "indie rock", "electronica", "folk",
+    "punk", "oldies", "blues", "hard rock", "ambient", "experimental", "hip-hop",
+    "hip hop", "country", "funk", "electro", "heavy metal", "progressive rock",
+    "rnb", "r&b", "indie pop", "house",
+}
+
+_OCCASION_LABELS = {
+    "christmas", "holiday", "party", "wedding", "advertising", "commercial",
+    "corporate", "film", "movie", "game", "trailer", "documentary", "sport",
+}
+
+_SEASON_LABELS = {"summer": "summer", "christmas": "winter"}
+
+_ERA_RE = re.compile(r"^(00s|[6-9]0s|(?:19|20)\d0s)$")
+
+# Run-together MTG instrument names -> readable form.
+_READABLE = {
+    "acousticguitar": "acoustic guitar",
+    "electricguitar": "electric guitar",
+    "classicalguitar": "classical guitar",
+    "acousticbassguitar": "acoustic bass guitar",
+    "electricpiano": "electric piano",
+    "drummachine": "drum machine",
+    "pipeorgan": "pipe organ",
+    "doublebass": "double bass",
+}
+
+
+def _pretty(label: str) -> str:
+    """Readable tag: take the most specific hierarchy segment, tidy separators."""
     label = label.strip()
-    for separator in ("---", "::", ":", "/", "|"):
+    for separator in ("---", "::", "|", "/"):
         if separator in label:
             label = label.split(separator)[-1]
-    return label.replace("_", " ").replace("-", " ").strip()
+    label = label.replace("_", " ").strip()
+    return _READABLE.get(label.lower().replace(" ", ""), label)
 
 
-def _pick(tags: list[dict[str, Any]], keywords: set[str], limit: int = 5) -> list[str]:
-    picked: list[str] = []
-    for item in tags:
-        label = _split_label(str(item.get("label", "")))
-        normalized = label.lower()
-        if not label:
-            continue
-        if any(keyword in normalized for keyword in keywords) and label not in picked:
-            picked.append(label)
-        if len(picked) >= limit:
-            break
-    return picked
+def _categorize(raw: str, low: str, head: str) -> tuple[str, str, str]:
+    """Return (category, value, extra) for one predicted label."""
+    # 1) Discogs genre400 hierarchy "Parent---Child": parent=genre, child=style.
+    if "---" in raw:
+        parent, _, child = raw.partition("---")
+        return ("genre_hierarchy", parent.strip(), _pretty(child))
+    # 2) Trust dedicated prediction heads by name.
+    if "instrument" in head:
+        if low in _VOCAL_LABELS or low == "voice":
+            return ("vocals", "vocal", "")
+        return ("instrument", _pretty(raw), "")
+    if "mood" in head or "theme" in head:
+        return ("theme" if low in _THEME_LABELS else "mood", _pretty(raw), "")
+    if "genre" in head:
+        return ("genre", _pretty(raw), "")
+    # 3) Flat label (MSD autotagger / unknown head): classify by known taxonomy.
+    if low in _VOCAL_LABELS or low == "voice" or "vocal" in low:
+        return ("vocals", "vocal", "")
+    if low in _INSTRUMENT_LABELS:
+        return ("instrument", _pretty(raw), "")
+    if low in _THEME_LABELS:
+        return ("theme", _pretty(raw), "")
+    if low in _MOOD_LABELS:
+        return ("mood", _pretty(raw), "")
+    if low in _GENRE_LABELS:
+        return ("genre", _pretty(raw), "")
+    if _ERA_RE.match(low):
+        return ("era", raw, "")
+    # 4) Unknown flat label — keep as a genre-style descriptor rather than drop it.
+    return ("genre", _pretty(raw), "")
 
 
 def _field_map(tags: list[dict[str, Any]], min_score: float) -> dict[str, str]:
-    filtered = [item for item in tags if float(item.get("score") or 0) >= min_score]
+    """Map raw model predictions to tag fields using each model's OWN taxonomy.
+
+    Predictions arrive ranked high->low score. Every prediction above ``min_score``
+    is routed to the correct field by (1) the Discogs genre hierarchy, (2) the
+    prediction head name, then (3) the known label taxonomies. The full ranked
+    list is always retained in ``analysis_json`` so nothing is lost.
+    """
+    filtered = [tag for tag in tags if float(tag.get("score") or 0) >= min_score]
     if not filtered:
         return {}
 
-    genre_keywords = {
-        "pop",
-        "rock",
-        "hip hop",
-        "rap",
-        "dance",
-        "electronic",
-        "house",
-        "techno",
-        "metal",
-        "jazz",
-        "classical",
-        "country",
-        "reggae",
-        "latin",
-        "r&b",
-        "soul",
-        "folk",
-        "indie",
-        "ambient",
-        "blues",
-    }
-    mood_keywords = {
-        "happy",
-        "sad",
-        "angry",
-        "relaxed",
-        "calm",
-        "aggressive",
-        "dark",
-        "bright",
-        "party",
-        "romantic",
-        "melancholic",
-        "energetic",
-        "uplifting",
-        "chill",
-    }
-    instrument_keywords = {
-        "guitar",
-        "piano",
-        "drums",
-        "bass",
-        "synth",
-        "violin",
-        "strings",
-        "brass",
-        "sax",
-        "trumpet",
-        "vocal",
-    }
-    theme_keywords = {"summer", "christmas", "love", "workout", "club", "background", "dance", "party"}
+    genres: list[str] = []
+    styles: list[str] = []
+    moods: list[str] = []
+    themes: list[str] = []
+    occasions: list[str] = []
+    seasons: list[str] = []
+    instruments: list[str] = []
+    has_vocals = False
 
-    genres = _pick(filtered, genre_keywords, 4)
-    moods = _pick(filtered, mood_keywords, 6)
-    instruments = _pick(filtered, instrument_keywords, 6)
-    themes = _pick(filtered, theme_keywords, 5)
+    def _add(bucket: list[str], value: str) -> None:
+        value = value.strip()
+        if value and value.lower() not in {existing.lower() for existing in bucket}:
+            bucket.append(value)
+
+    for tag in filtered:
+        raw = str(tag.get("label", "")).strip()
+        if not raw:
+            continue
+        low = raw.lower()
+        head = str(tag.get("head", "")).lower()
+        category, value, extra = _categorize(raw, low, head)
+        if category == "genre_hierarchy":
+            _add(genres, value)
+            if extra:
+                _add(styles, extra)
+        elif category == "genre":
+            _add(genres, value)
+        elif category == "instrument":
+            _add(instruments, value)
+        elif category == "vocals":
+            has_vocals = True
+        elif category == "mood":
+            _add(moods, value)
+        elif category == "theme":
+            _add(themes, value)
+            if low in _OCCASION_LABELS:
+                _add(occasions, value)
+            if low in _SEASON_LABELS:
+                _add(seasons, _SEASON_LABELS[low])
+        # 'era' stays only in analysis_json below — retained, never silently dropped.
+
     fields: dict[str, str] = {}
     if genres:
         fields["genre"] = genres[0]
-        if len(genres) > 1:
-            fields["subgenre"] = ", ".join(genres[1:])
+        extra_styles = styles + genres[1:]
+        if extra_styles:
+            fields["subgenre"] = ", ".join(extra_styles[:4])
     if moods:
         fields["mood"] = moods[0]
-        fields["moods"] = ", ".join(moods)
-    if instruments:
-        fields["instruments"] = ", ".join(instruments)
-        if any("vocal" in item.lower() for item in instruments):
-            fields["vocals"] = "vocal"
+        fields["moods"] = ", ".join(moods[:6])
     if themes:
-        fields["themes"] = ", ".join(themes)
+        fields["themes"] = ", ".join(themes[:6])
+    if occasions:
+        fields["occasion"] = ", ".join(occasions[:3])
+    if seasons:
+        fields["season"] = seasons[0]
+    if instruments:
+        fields["instruments"] = ", ".join(instruments[:8])
+    if has_vocals:
+        fields["vocals"] = "vocal"
 
-    score_labels = [f"{_split_label(str(item.get('label', '')))}:{float(item.get('score') or 0):.3f}" for item in filtered[:8]]
+    # Provenance: the full ranked prediction list is always retained.
+    score_labels = [
+        f"{_pretty(str(tag.get('label', '')))}:{float(tag.get('score') or 0):.3f}"
+        for tag in filtered[:10]
+    ]
     fields["analysis_summary"] = "Local AI audio tags: " + "; ".join(score_labels)
-    fields["analysis_json"] = json.dumps({"local_ai_top_tags": filtered[:25]}, ensure_ascii=False)
+    fields["analysis_json"] = json.dumps({"local_ai_top_tags": filtered[:40]}, ensure_ascii=False)
     return fields
 
 

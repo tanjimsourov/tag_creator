@@ -29,8 +29,8 @@ dev = [
 [project.scripts]
 tag-creator = "tag_creator.cli:main"
 
-[tool.setuptools]
-packages = ["tag_creator", "tag_creator.clients"]
+[tool.setuptools.packages.find]
+include = ["tag_creator*"]
 
 [tool.pytest.ini_options]
 markers = [
