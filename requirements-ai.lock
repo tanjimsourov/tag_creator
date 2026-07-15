@@ -1,5 +1,5 @@
 # Pinned optional local-AI dependencies. Install only on the inference machine.
-# essentia-tensorflow wheels are platform/Python-version specific; if pip cannot
-# resolve this exact version on your server, pin to the newest one it offers.
-essentia-tensorflow==2.1b6.dev1110
+# essentia-tensorflow wheels are platform/Python-version specific. This pin
+# matches the currently available Docker/Linux wheel for the Python 3.12 image.
+essentia-tensorflow==2.1b6.dev1389
 numpy==2.4.2

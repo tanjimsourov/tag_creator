@@ -1,3 +1,23 @@
 18:23:14 INFO [13b61cbb] tag_creator.csv_store: compacted api_cache.csv: 25 rows -> 25 unique
 18:23:14 INFO [13b61cbb] tag_creator.csv_store: compacted media_inventory.csv: 2 rows -> 2 unique
 18:23:14 INFO [13b61cbb] tag_creator.csv_store: compacted enrichment_state.csv: 2 rows -> 2 unique
+13:33:50 INFO [2cb10a44] tag_creator.pipeline: enriching 5 files with 8 worker(s)
+13:34:04 WARNING [2cb10a44] tag_creator.clients.base: discogs returned 401: {"message":"Invalid consumer key/secret. Please register an app before making requests."}
+13:34:09 WARNING [2cb10a44] tag_creator.clients.base: spotify returned 403: Active premium subscription required for the owner of the app. When the subscription status changes, it can take a few hours before requests are allowed again.
+13:34:10 WARNING [2cb10a44] tag_creator.clients.base: spotify returned 403: Active premium subscription required for the owner of the app. When the subscription status changes, it can take a few hours before requests are allowed again.
+13:34:10 WARNING [2cb10a44] tag_creator.clients.base: discogs returned 401: {"message":"Invalid consumer key/secret. Please register an app before making requests."}
+13:34:11 WARNING [2cb10a44] tag_creator.clients.base: discogs returned 401: {"message":"Invalid consumer key/secret. Please register an app before making requests."}
+13:34:12 WARNING [2cb10a44] tag_creator.clients.base: discogs returned 401: {"message":"Invalid consumer key/secret. Please register an app before making requests."}
+13:34:14 WARNING [2cb10a44] tag_creator.clients.base: discogs returned 401: {"message":"Invalid consumer key/secret. Please register an app before making requests."}
+13:34:14 WARNING [2cb10a44] tag_creator.clients.base: circuit breaker OPEN for discogs after 5 consecutive failures; skipping it for this run
+13:37:23 INFO [cb927013] tag_creator.pipeline: enriching 5 files with 2 worker(s)
+13:37:25 WARNING [cb927013] tag_creator.clients.base: discogs returned 401: {"message":"Invalid consumer key/secret. Please register an app before making requests."}
+13:37:26 WARNING [cb927013] tag_creator.clients.base: discogs returned 401: {"message":"Invalid consumer key/secret. Please register an app before making requests."}
+13:37:48 WARNING [cb927013] tag_creator.clients.base: discogs returned 401: {"message":"Invalid consumer key/secret. Please register an app before making requests."}
+13:37:50 WARNING [cb927013] tag_creator.clients.base: spotify returned 403: Active premium subscription required for the owner of the app. When the subscription status changes, it can take a few hours before requests are allowed again.
+13:37:50 WARNING [cb927013] tag_creator.clients.base: discogs returned 401: {"message":"Invalid consumer key/secret. Please register an app before making requests."}
+13:38:12 WARNING [cb927013] tag_creator.clients.base: spotify returned 403: Active premium subscription required for the owner of the app. When the subscription status changes, it can take a few hours before requests are allowed again.
+13:38:12 WARNING [cb927013] tag_creator.clients.base: discogs returned 401: {"message":"Invalid consumer key/secret. Please register an app before making requests."}
+13:38:12 WARNING [cb927013] tag_creator.clients.base: circuit breaker OPEN for discogs after 5 consecutive failures; skipping it for this run
+13:38:25 INFO [cb927013] tag_creator.csv_store: compacted media_inventory.csv: 12 rows -> 7 unique
+13:38:25 INFO [cb927013] tag_creator.csv_store: compacted enrichment_state.csv: 12 rows -> 7 unique
