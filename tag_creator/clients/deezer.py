@@ -4,6 +4,7 @@ from urllib.parse import quote
 
 from ..matching import plausible_track_match
 from ..models import MediaFile, ProviderResult
+from ..querying import candidate_track_pairs
 from .base import ProviderClient
 
 
@@ -12,33 +13,29 @@ class DeezerClient(ProviderClient):
     base_url = "https://api.deezer.com"
 
     def enrich(self, media: MediaFile) -> ProviderResult | None:
-        title = media.tags.get("title", "")
-        artist = media.tags.get("artist", "")
-        if not title and not artist:
+        candidates = candidate_track_pairs(media, limit=3)
+        if not candidates:
             return None
-        query = " ".join(item for item in [artist, title] if item)
-        data = self.get_json(
-            f"{self.base_url}/search",
-            params={"q": query, "limit": 5},
-            cache_key_extra="track-search",
-        )
-        tracks = data.get("data", []) if data else []
-        if not tracks:
-            return ProviderResult("deezer", 0, {}, notes="no match")
-        track = tracks[0]
-        plausible, title_score, artist_score = plausible_track_match(
-            title,
-            artist,
-            track.get("title", ""),
-            track.get("artist", {}).get("name", ""),
-        )
-        if not plausible:
-            return ProviderResult(
-                "deezer",
-                0,
-                {},
-                notes=f"rejected low similarity title={title_score:.2f}, artist={artist_score:.2f}",
+        ranked = []
+        for artist, title in candidates:
+            query = " ".join(item for item in [artist, title] if item)
+            data = self.get_json(
+                f"{self.base_url}/search",
+                params={"q": query, "limit": 8},
+                cache_key_extra="track-search",
             )
+            for track in (data.get("data", []) if data else []):
+                plausible, title_score, artist_score = plausible_track_match(
+                    title,
+                    artist,
+                    track.get("title", ""),
+                    track.get("artist", {}).get("name", ""),
+                )
+                if plausible:
+                    ranked.append(((title_score * 0.60) + (artist_score * 0.40), title_score, artist_score, query, track))
+        if not ranked:
+            return ProviderResult("deezer", 0, {}, notes="no match")
+        _, title_score, artist_score, query, track = sorted(ranked, key=lambda row: row[0], reverse=True)[0]
         album_data = {}
         album_id = track.get("album", {}).get("id")
         if album_id:
@@ -67,5 +64,5 @@ class DeezerClient(ProviderClient):
             {key: value for key, value in fields.items() if value},
             source_url=track.get("link", ""),
             raw={"track_id": track.get("id", ""), "album_id": album_id or ""},
-            notes=f"Deezer public API; title_similarity={title_score:.2f}; artist_similarity={artist_score:.2f}",
+            notes=f"Deezer public API; query={query}; title_similarity={title_score:.2f}; artist_similarity={artist_score:.2f}",
         )

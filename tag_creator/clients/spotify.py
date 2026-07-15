@@ -8,6 +8,7 @@ import requests
 from ..config import Settings
 from ..matching import plausible_track_match
 from ..models import MediaFile, ProviderResult
+from ..querying import candidate_track_pairs
 from .base import ProviderClient
 
 
@@ -45,41 +46,46 @@ class SpotifyClient(ProviderClient):
         return {"Authorization": f"Bearer {self._token}"}
 
     def enrich(self, media: MediaFile) -> ProviderResult | None:
-        title = media.tags.get("title", "")
-        artist = media.tags.get("artist", "")
-        if not title or not artist or not self.is_configured():
+        candidates = candidate_track_pairs(media, limit=3)
+        if not candidates or not self.is_configured():
             return None
         headers = self._token_header()
         if not headers:
             return ProviderResult("spotify", 0, {}, notes="token unavailable")
 
-        query = f'track:"{title}" artist:"{artist}"'
-        data = self.get_json(
-            f"{self.base_url}/search",
-            params={"q": query, "type": "track", "limit": 5},
-            headers=headers,
-            cache_key_extra="track-search",
-        )
-        tracks = data.get("tracks", {}).get("items", []) if data else []
-        if not tracks:
-            return ProviderResult("spotify", 0, {}, notes="no match")
-
         ranked = []
-        for candidate in tracks:
-            candidate_artist = ", ".join(artist_item.get("name", "") for artist_item in candidate.get("artists", []))
-            plausible, title_score, artist_score = plausible_track_match(
-                title,
-                artist,
-                candidate.get("name", ""),
-                candidate_artist,
+        for artist, title in candidates:
+            query = f'track:"{title}" artist:"{artist}"' if artist else title
+            data = self.get_json(
+                f"{self.base_url}/search",
+                params={"q": query, "type": "track", "limit": 8},
+                headers=headers,
+                cache_key_extra="track-search",
             )
-            if plausible:
-                popularity = int(candidate.get("popularity") or 0)
-                ranked.append(((title_score * 0.55) + (artist_score * 0.35) + (popularity / 100 * 0.10), title_score, artist_score, candidate))
+            tracks = data.get("tracks", {}).get("items", []) if data else []
+            for candidate in tracks:
+                candidate_artist = ", ".join(artist_item.get("name", "") for artist_item in candidate.get("artists", []))
+                plausible, title_score, artist_score = plausible_track_match(
+                    title,
+                    artist,
+                    candidate.get("name", ""),
+                    candidate_artist,
+                )
+                if plausible:
+                    popularity = int(candidate.get("popularity") or 0)
+                    ranked.append(
+                        (
+                            (title_score * 0.55) + (artist_score * 0.35) + (popularity / 100 * 0.10),
+                            title_score,
+                            artist_score,
+                            query,
+                            candidate,
+                        )
+                    )
         if not ranked:
             return ProviderResult("spotify", 0, {}, notes="rejected all results by title/artist similarity")
 
-        _, title_score, artist_score, track = sorted(ranked, key=lambda item: item[0], reverse=True)[0]
+        _, title_score, artist_score, query, track = sorted(ranked, key=lambda item: item[0], reverse=True)[0]
         album = track.get("album", {})
         fields = {
             "title": track.get("name", ""),
@@ -104,5 +110,5 @@ class SpotifyClient(ProviderClient):
             fields,
             source_url=track.get("external_urls", {}).get("spotify", ""),
             raw={"spotify_id": track.get("id", ""), "popularity": popularity},
-            notes=f"popularity {popularity}; title_similarity={title_score:.2f}; artist_similarity={artist_score:.2f}",
+            notes=f"query={query}; popularity {popularity}; title_similarity={title_score:.2f}; artist_similarity={artist_score:.2f}",
         )

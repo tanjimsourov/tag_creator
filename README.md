@@ -76,6 +76,7 @@ CSV state is flushed during long runs, not only at the end, so large batches can
 
 `tag_creator` can run open-source local audio models after official APIs and before paid AI fallback:
 
+- `essentia_features` for BPM, key/scale, and danceability.
 - `essentia_discogs_effnet` for genre/style descriptors.
 - `musicnn_mtg_jamendo` for mood/theme/instrument-style descriptors.
 
@@ -109,6 +110,8 @@ More notes: `docs/server_deployment.md`.
 ## Paid API Integration
 
 SONOTELLER/RapidAPI is supported as a paid AI-analysis provider through `.env`.
+It is paused by default. Enable it only when paid processing is approved by adding
+`sonoteller` to `PAID_STAGE_PROVIDERS`.
 
 ```text
 SONOTELLER_RAPIDAPI_KEY=
@@ -128,7 +131,7 @@ The default enrichment mode is hybrid:
 Stage 0: local cleanup for better search queries
 Stage 1: free/catalog APIs
 Stage 2: safe web discovery for missing fields
-Stage 3: paid SONOTELLER only if important tags are still missing
+Stage 3: optional paid SONOTELLER only if explicitly enabled
 ```
 
 Details: `docs/hybrid_pipeline.md`.

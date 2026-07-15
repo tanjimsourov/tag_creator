@@ -152,6 +152,8 @@ class Settings:
     discogs_token: str
     discogs_consumer_key: str
     discogs_consumer_secret: str
+    genius_client_id: str
+    genius_client_secret: str
     genius_access_token: str
     sonoteller_rapidapi_key: str
     sonoteller_rapidapi_host: str
@@ -277,7 +279,7 @@ def load_settings() -> Settings:
         ["local_cleanup", "itunes", "deezer", "wikidata", "acoustid", "musicbrainz", "spotify", "lastfm", "discogs", "genius", "cover_art_archive"],
     )
     web_stage = _list("WEB_STAGE_PROVIDERS", ["web_discovery", "rules_inference"])
-    paid_stage = _list("PAID_STAGE_PROVIDERS", ["sonoteller"])
+    paid_stage = _list("PAID_STAGE_PROVIDERS", [])
     local_ai_stage = _list(
         "LOCAL_AI_STAGE_PROVIDERS",
         ["essentia_features", "essentia_discogs_effnet", "musicnn_mtg_jamendo"],
@@ -337,7 +339,20 @@ def load_settings() -> Settings:
         essentia_extra_heads=_list("ESSENTIA_EXTRA_HEADS", []),
         web_scraping_enabled=_bool("WEB_SCRAPING_ENABLED", True),
         web_max_results=_int("WEB_MAX_RESULTS", 5),
-        web_allowed_domains=_list("WEB_ALLOWED_DOMAINS", ["tunebat.com", "songbpm.com", "musicstax.com", "songdata.io"]),
+        web_allowed_domains=_list(
+            "WEB_ALLOWED_DOMAINS",
+            [
+                "tunebat.com",
+                "songbpm.com",
+                "musicstax.com",
+                "songdata.io",
+                "getsongbpm.com",
+                "getsongkey.com",
+                "chosic.com",
+                "wikidata.org",
+                "wikipedia.org",
+            ],
+        ),
         web_search_endpoint=os.environ.get("WEB_SEARCH_ENDPOINT", "https://html.duckduckgo.com/html/").strip(),
         # Merge env overrides ON TOP of defaults so a provider added later always
         # has a sane weight/rate even if the user's .env predates it.
@@ -351,6 +366,8 @@ def load_settings() -> Settings:
         discogs_token=os.environ.get("DISCOGS_TOKEN", "").strip(),
         discogs_consumer_key=os.environ.get("DISCOGS_CONSUMER_KEY", "").strip(),
         discogs_consumer_secret=os.environ.get("DISCOGS_CONSUMER_SECRET", "").strip(),
+        genius_client_id=os.environ.get("GENIUS_CLIENT_ID", "").strip(),
+        genius_client_secret=os.environ.get("GENIUS_CLIENT_SECRET", "").strip(),
         genius_access_token=os.environ.get("GENIUS_ACCESS_TOKEN", "").strip(),
         sonoteller_rapidapi_key=os.environ.get("SONOTELLER_RAPIDAPI_KEY", "").strip(),
         sonoteller_rapidapi_host=os.environ.get("SONOTELLER_RAPIDAPI_HOST", "sonoteller-ai1.p.rapidapi.com").strip(),

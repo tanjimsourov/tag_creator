@@ -14,6 +14,7 @@ from bs4 import BeautifulSoup
 from ..config import Settings
 from ..matching import plausible_track_match
 from ..models import MediaFile, ProviderResult
+from ..querying import candidate_track_pairs
 from .base import ProviderClient
 
 LOGGER = logging.getLogger(__name__)
@@ -122,6 +123,21 @@ class WebDiscoveryClient(ProviderClient):
                 break
         return urls
 
+    def _search_many_urls(self, queries: list[str]) -> list[str]:
+        urls: list[str] = []
+        seen: set[str] = set()
+        per_query_limit = self.max_results
+        for query in queries:
+            for url in self._search_urls(query):
+                key = url.split("#", 1)[0]
+                if key in seen:
+                    continue
+                seen.add(key)
+                urls.append(url)
+                if len(urls) >= per_query_limit:
+                    return urls
+        return urls
+
     @staticmethod
     def _extract_json_ld(soup: BeautifulSoup) -> list[dict]:
         blocks: list[dict] = []
@@ -139,25 +155,77 @@ class WebDiscoveryClient(ProviderClient):
     @staticmethod
     def _find_text_field(text: str, labels: list[str]) -> str:
         for label in labels:
-            pattern = rf"{re.escape(label)}\s*[:\-]\s*([A-Za-z0-9 #+/.,&'-]{{1,80}})"
-            match = re.search(pattern, text, flags=re.I)
-            if match:
-                return unescape(match.group(1)).strip(" .,\n\t")
+            patterns = [
+                rf"\b{re.escape(label)}\b\s*[:\-]\s*([A-Za-z0-9 #+/.,&'%'-]{{1,80}})",
+                rf"\b{re.escape(label)}\b\s+([A-Za-z0-9 #+/.,&'%'-]{{1,80}})",
+            ]
+            for pattern in patterns:
+                match = re.search(pattern, text, flags=re.I)
+                if match:
+                    value = unescape(match.group(1)).strip(" .,\n\t")
+                    value = re.split(r"\s{2,}|(?:\s+\|\s+)|(?:\s+[A-Z][A-Za-z ]{2,20}:)", value, maxsplit=1)[0]
+                    return value.strip(" .,\n\t")
         return ""
+
+    @staticmethod
+    def _clean_scalar(value: object) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, list):
+            return ", ".join(str(item) for item in value if item)
+        if isinstance(value, dict):
+            return str(value.get("name", "") or "")
+        return str(value).strip()
+
+    @staticmethod
+    def _meta_content(soup: BeautifulSoup, names: list[str]) -> str:
+        for name in names:
+            selector = (
+                f'meta[name="{name}"], meta[property="{name}"], '
+                f'meta[name="{name.lower()}"], meta[property="{name.lower()}"]'
+            )
+            tag = soup.select_one(selector)
+            if tag and tag.get("content"):
+                return str(tag.get("content", "")).strip()
+        return ""
+
+    @staticmethod
+    def _normalize_bpm(value: str) -> str:
+        match = re.search(r"\b([4-9]\d|1\d{2}|2[0-4]\d)\b", value)
+        return match.group(1) if match else ""
+
+    @staticmethod
+    def _normalize_key(value: str) -> str:
+        match = re.search(r"\b([A-G](?:#|b)?\s*(?:maj(?:or)?|min(?:or)?|m)?)\b", value, flags=re.I)
+        if not match:
+            return ""
+        return re.sub(r"\s+", " ", match.group(1)).strip()
 
     def _extract_fields(self, html: str, url: str) -> dict[str, str]:
         soup = BeautifulSoup(html, "html.parser")
         json_ld = self._extract_json_ld(soup)
         fields: dict[str, str] = {}
         for block in json_ld:
-            fields.setdefault("title", str(block.get("name", "") or ""))
+            fields.setdefault("title", self._clean_scalar(block.get("name", "")))
             by_artist = block.get("byArtist") or block.get("creator")
             if isinstance(by_artist, dict):
                 fields.setdefault("artist", str(by_artist.get("name", "") or ""))
             elif isinstance(by_artist, str):
                 fields.setdefault("artist", by_artist)
-            fields.setdefault("genre", str(block.get("genre", "") or ""))
-            fields.setdefault("date", str(block.get("datePublished", "") or block.get("dateCreated", "") or ""))
+            album = block.get("inAlbum") or block.get("album")
+            fields.setdefault("album", self._clean_scalar(album))
+            fields.setdefault("genre", self._clean_scalar(block.get("genre", "")))
+            fields.setdefault("date", self._clean_scalar(block.get("datePublished", "") or block.get("dateCreated", "")))
+        meta_fields = {
+            "title": self._meta_content(soup, ["og:title", "twitter:title", "title"]),
+            "artist": self._meta_content(soup, ["music:musician", "artist"]),
+            "album": self._meta_content(soup, ["music:album", "album"]),
+            "genre": self._meta_content(soup, ["music:genre", "genre"]),
+            "date": self._meta_content(soup, ["music:release_date", "release_date", "date"]),
+        }
+        for key, value in meta_fields.items():
+            if value and key not in fields:
+                fields[key] = value
         text = soup.get_text(" ", strip=True)
         text = re.sub(r"\s+", " ", text)
         discovered = {
@@ -165,10 +233,16 @@ class WebDiscoveryClient(ProviderClient):
             "subgenre": self._find_text_field(text, ["subgenre", "sub-genre", "style"]),
             "bpm": self._find_text_field(text, ["bpm", "tempo"]),
             "key": self._find_text_field(text, ["key"]),
+            "language": self._find_text_field(text, ["language", "lyrics language"]),
             "mood": self._find_text_field(text, ["mood", "moods"]),
             "energy": self._find_text_field(text, ["energy"]),
             "danceability": self._find_text_field(text, ["danceability"]),
+            "valence": self._find_text_field(text, ["valence"]),
         }
+        if discovered["bpm"]:
+            discovered["bpm"] = self._normalize_bpm(discovered["bpm"])
+        if discovered["key"]:
+            discovered["key"] = self._normalize_key(discovered["key"])
         for key, value in discovered.items():
             if value and key not in fields:
                 fields[key] = value
@@ -177,12 +251,27 @@ class WebDiscoveryClient(ProviderClient):
         return {key: value for key, value in fields.items() if value}
 
     def enrich(self, media: MediaFile) -> ProviderResult | None:
-        title = media.tags.get("title", "")
-        artist = media.tags.get("artist", "")
-        if not self.is_configured() or not title:
+        candidates = candidate_track_pairs(media, limit=3)
+        if not self.is_configured() or not candidates:
             return None
-        query = f'{artist} {title} genre bpm key mood'
-        urls = self._search_urls(query)
+        queries: list[str] = []
+        for artist, title in candidates:
+            track_query = " ".join(item for item in [artist, title] if item).strip()
+            if not track_query:
+                continue
+            queries.extend(
+                [
+                    f'"{track_query}" genre bpm key mood',
+                    f'"{track_query}" tempo key danceability energy',
+                    f'site:tunebat.com "{track_query}"',
+                    f'site:musicstax.com "{track_query}"',
+                    f'site:songbpm.com "{track_query}"',
+                    f'site:getsongbpm.com "{track_query}"',
+                    f'site:songdata.io "{track_query}"',
+                    f'site:chosic.com "{track_query}"',
+                ]
+            )
+        urls = self._search_many_urls(queries)
         combined: dict[str, str] = {}
         used_urls: list[str] = []
         for url in urls:
@@ -201,13 +290,16 @@ class WebDiscoveryClient(ProviderClient):
                 continue
             fields = self._extract_fields(response.text, url)
             if fields.get("title") or fields.get("artist"):
-                plausible, _, _ = plausible_track_match(
-                    title,
-                    artist,
-                    fields.get("title", title),
-                    fields.get("artist", artist),
-                    min_title=0.45,
-                    min_artist=0.35,
+                plausible = any(
+                    plausible_track_match(
+                        title,
+                        artist,
+                        fields.get("title", title),
+                        fields.get("artist", artist),
+                        min_title=0.45,
+                        min_artist=0.35,
+                    )[0]
+                    for artist, title in candidates
                 )
                 if not plausible:
                     continue

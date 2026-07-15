@@ -17,7 +17,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg libsndfile1 ca-certificates \
+    && apt-get install -y --no-install-recommends ffmpeg libsndfile1 libchromaprint-tools ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Install from the pinned lock files for reproducible builds.

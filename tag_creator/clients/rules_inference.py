@@ -6,15 +6,27 @@ from .base import ProviderClient
 
 GENRE_RULES = {
     "house": {"mood": "upbeat", "energy": "high", "danceability": "high", "occasion": "retail energy"},
+    "deep house": {"mood": "smooth", "energy": "medium", "danceability": "high", "occasion": "background retail"},
+    "tech house": {"mood": "driving", "energy": "high", "danceability": "high", "occasion": "busy store"},
     "dance": {"mood": "upbeat", "energy": "high", "danceability": "high", "occasion": "busy store"},
+    "edm": {"mood": "energetic", "energy": "high", "danceability": "high", "occasion": "peak hours"},
     "electro": {"mood": "energetic", "energy": "high", "danceability": "high"},
     "pop": {"mood": "mainstream", "energy": "medium", "danceability": "medium"},
+    "dance pop": {"mood": "upbeat", "energy": "medium-high", "danceability": "high"},
+    "synthpop": {"mood": "bright", "energy": "medium", "danceability": "medium-high"},
+    "r&b": {"mood": "smooth", "energy": "medium-low", "danceability": "medium"},
+    "soul": {"mood": "warm", "energy": "medium-low", "occasion": "premium atmosphere"},
+    "hip hop": {"mood": "confident", "energy": "medium-high", "danceability": "medium-high"},
     "rock": {"mood": "energetic", "energy": "medium-high"},
+    "indie": {"mood": "fresh", "energy": "medium", "occasion": "modern retail"},
     "jazz": {"mood": "relaxed", "energy": "low-medium", "occasion": "calm store"},
     "classical": {"mood": "calm", "energy": "low", "occasion": "premium atmosphere"},
     "christmas": {"mood": "festive", "season": "christmas", "occasion": "holiday"},
     "acoustic": {"mood": "warm", "energy": "low-medium", "occasion": "soft background"},
     "ambient": {"mood": "calm", "energy": "low", "weather": "rainy"},
+    "latin": {"mood": "sunny", "energy": "medium-high", "danceability": "high", "weather": "sunny"},
+    "reggaeton": {"mood": "party", "energy": "high", "danceability": "high"},
+    "afro": {"mood": "warm", "energy": "medium-high", "danceability": "high"},
 }
 
 
@@ -60,4 +72,3 @@ class RulesInferenceClient(ProviderClient):
             notes="playlist taxonomy inference from existing tags; lower confidence than external APIs",
             raw={"matched_rules": matched_rules},
         )
-

@@ -19,7 +19,7 @@ services:
       - ../ftp_downloads/mp3:/app/media:ro
       - ./data:/app/data
       - ./output:/app/output
-      - ./models/local_ai:/app/models/local_ai:ro
+      - ${LOCAL_AI_HOST_DIR:-./models/local_ai}:/app/models/local_ai:ro
     command: ["--input-dir", "media", "--report", "output/enrichment_report.csv", "--dry-run"]
     deploy:
       resources:

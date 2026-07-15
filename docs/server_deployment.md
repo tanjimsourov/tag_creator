@@ -43,6 +43,19 @@ Model files are not copied into the image. Mount them into:
 /app/models/local_ai
 ```
 
+On the current Windows server, keep the downloaded open-source model files here:
+
+```text
+D:\editorBackend\tag_ai
+```
+
+Keep this in `.env`:
+
+```text
+LOCAL_AI_HOST_DIR=D:/editorBackend/tag_ai
+LOCAL_AI_MODELS_DIR=models/local_ai
+```
+
 ## Run
 
 ```powershell
@@ -50,8 +63,19 @@ docker run --rm --cpus=2 --env-file .env `
   -v ${PWD}/../ftp_downloads/mp3:/app/media:ro `
   -v ${PWD}/data:/app/data `
   -v ${PWD}/output:/app/output `
-  -v ${PWD}/models/local_ai:/app/models/local_ai:ro `
+  -v D:/editorBackend/tag_ai:/app/models/local_ai:ro `
   tag_creator --input-dir media --report output/enrichment_report.csv --dry-run
+```
+
+For cache-free test runs, use temporary in-memory data/log mounts:
+
+```powershell
+docker run --rm --user root --cpus=2 --env-file .env `
+  --tmpfs /app/data --tmpfs /app/logs `
+  -v ${PWD}/test_media:/app/test_media:ro `
+  -v ${PWD}/output:/app/output `
+  -v D:/editorBackend/tag_ai:/app/models/local_ai:ro `
+  tag_creator:local-ai --input-dir test_media/free_ai_5 --report output/free_ai_5_docker_ai_report.csv --limit 5 --dry-run --no-resume
 ```
 
 ## Readiness Check
