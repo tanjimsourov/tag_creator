@@ -3,3 +3,7 @@
 # matches the currently available Docker/Linux wheel for the Python 3.12 image.
 essentia-tensorflow==2.1b6.dev1389
 numpy==2.4.2
+torch==2.13.0
+transformers==4.57.6
+librosa==0.11.0
+soundfile==0.14.0

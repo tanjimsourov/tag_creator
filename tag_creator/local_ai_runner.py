@@ -150,6 +150,67 @@ def run_musicnn_mtg_jamendo(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _split_label_spec(spec: str) -> tuple[str, str]:
+    if ":" not in spec:
+        return "theme", spec.strip()
+    field, value = spec.split(":", 1)
+    return field.strip().lower(), value.strip()
+
+
+def run_clap_zero_shot(args: argparse.Namespace) -> dict[str, Any]:
+    """Zero-shot audio tagging with LAION CLAP.
+
+    CLAP is useful for broad descriptive tags (genre/mood/theme/instrument). It
+    is intentionally not used for factual catalog fields like artist/title/year.
+    Model files are cached in the mounted local-AI directory.
+    """
+    import numpy as np
+    import torch
+    from transformers import ClapModel, ClapProcessor
+
+    audio = _load_audio(args.audio, rate=48000)
+    # Very long files are expensive and unnecessary for descriptors. Analyze the
+    # first N seconds consistently so batch timing stays bounded.
+    max_samples = int(48000 * args.max_seconds)
+    if len(audio) > max_samples:
+        audio = audio[:max_samples]
+    audio = np.asarray(audio, dtype=np.float32)
+
+    label_specs = [spec for spec in args.label if spec.strip()]
+    if not label_specs:
+        raise ValueError("at least one --label is required")
+    fields_values = [_split_label_spec(spec) for spec in label_specs]
+    prompts = [f"a music track with {field} {value}" for field, value in fields_values]
+
+    processor = ClapProcessor.from_pretrained(args.model_name, cache_dir=str(args.cache_dir))
+    model = ClapModel.from_pretrained(args.model_name, cache_dir=str(args.cache_dir))
+    model.eval()
+    inputs = processor(text=prompts, audios=audio, sampling_rate=48000, return_tensors="pt", padding=True)
+    with torch.no_grad():
+        outputs = model(**inputs)
+        scores = outputs.logits_per_audio.softmax(dim=-1).cpu().numpy()[0]
+
+    ranked = np.argsort(scores)[::-1][: args.top_n]
+    tags: list[dict[str, Any]] = []
+    for index in ranked:
+        field, value = fields_values[int(index)]
+        tags.append(
+            {
+                "field": field,
+                "label": value,
+                "score": round(float(scores[int(index)]), 6),
+                "head": "clap_zero_shot",
+                "prompt": prompts[int(index)],
+            }
+        )
+    return {
+        "provider": "clap_zero_shot",
+        "audio": str(args.audio),
+        "model": args.model_name,
+        "tags": tags,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run optional local AI music tagging models.")
     subparsers = parser.add_subparsers(dest="provider", required=True)
@@ -175,6 +236,14 @@ def build_parser() -> argparse.ArgumentParser:
     musicnn.add_argument("--prediction-model", type=Path, required=True)
     musicnn.add_argument("--labels", type=Path, required=True)
     musicnn.add_argument("--top-n", type=int, default=12)
+
+    clap = subparsers.add_parser("clap_zero_shot")
+    clap.add_argument("--audio", type=Path, required=True)
+    clap.add_argument("--model-name", required=True)
+    clap.add_argument("--cache-dir", type=Path, required=True)
+    clap.add_argument("--label", action="append", default=[])
+    clap.add_argument("--top-n", type=int, default=12)
+    clap.add_argument("--max-seconds", type=int, default=45)
     return parser
 
 
@@ -196,6 +265,8 @@ def main() -> int:
             result = run_essentia_discogs_effnet(args)
         elif args.provider == "musicnn_mtg_jamendo":
             result = run_musicnn_mtg_jamendo(args)
+        elif args.provider == "clap_zero_shot":
+            result = run_clap_zero_shot(args)
         else:
             raise ValueError(f"unsupported provider: {args.provider}")
     except Exception as exc:

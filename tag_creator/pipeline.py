@@ -133,8 +133,25 @@ def enrich_one(
 
         if interim.missing_required and settings.web_stage_providers:
             stage2_media = replace(media, tags={**media.tags, **interim.fields})
-            web_clients = _select_clients(client_map, settings.web_stage_providers)
+            web_clients = [
+                client
+                for client in _select_clients(client_map, settings.web_stage_providers)
+                if client.provider_name != "rules_inference"
+            ]
             provider_results.extend(_run_clients(stage2_media, web_clients, "stage2_web"))
+
+        interim = merge_metadata(
+            media=media,
+            results=provider_results,
+            provider_weights=settings.provider_weights,
+            min_field_confidence=settings.min_field_confidence,
+            required_tags=settings.required_tags,
+        )
+
+        rules_clients = _select_clients(client_map, ["rules_inference"])
+        if rules_clients:
+            stage2_media = replace(media, tags={**media.tags, **interim.fields})
+            provider_results.extend(_run_clients(stage2_media, rules_clients, "stage2_rules"))
 
         interim = merge_metadata(
             media=media,

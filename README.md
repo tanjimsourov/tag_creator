@@ -66,7 +66,7 @@ CSV state is flushed during long runs, not only at the end, so large batches can
 - `scripts/enrich_library.py` - search providers, score metadata, optionally write tags.
 - `scripts/export_tags_csv.py` - export tags already inside media files.
 - `scripts/verify_api_keys.py` - check which providers are enabled/configured.
-- `scripts/verify_live_providers.py` - make small live calls to validate Spotify, Last.fm, and Discogs credentials.
+- `scripts/verify_live_providers.py` - make small live calls to validate enabled live credentials.
 - `scripts/verify_local_ai.py` - check local AI dependencies and model files.
 - `scripts/server_readiness.py` - check server paths, CPU settings, and provider readiness.
 - `scripts/show_paid_api_samples.py` - print configured paid API sample calls.
@@ -79,10 +79,11 @@ CSV state is flushed during long runs, not only at the end, so large batches can
 - `essentia_features` for BPM, key/scale, and danceability.
 - `essentia_discogs_effnet` for genre/style descriptors.
 - `musicnn_mtg_jamendo` for mood/theme/instrument-style descriptors.
+- `clap_zero_shot` for broader genre, subgenre, mood, energy, occasion, weather/season, age-group, instrument, and vocal descriptors.
 
 These models analyze the audio file directly. They help with advanced playlist tags, but they do not replace factual catalog sources for artist, title, album, ISRC, label, or year.
 
-Keep `LOCAL_AI_ENABLED=false` until optional dependencies and model files are installed.
+Keep `LOCAL_AI_ENABLED=false` until optional dependencies and model files are installed. On the server, use `D:\editorBackend\tag_ai` as the mounted model folder and run Docker with the `tag_creator:local-ai` image.
 
 ```powershell
 pip install -r requirements-ai.txt

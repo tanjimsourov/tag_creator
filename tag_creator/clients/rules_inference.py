@@ -67,8 +67,8 @@ class RulesInferenceClient(ProviderClient):
             return None
         return ProviderResult(
             "rules_inference",
-            0.50,
+            0.88,
             fields,
-            notes="playlist taxonomy inference from existing tags; lower confidence than external APIs",
+            notes="playlist taxonomy inference from verified/free/local tags; suitable for CSV enrichment, lower priority than direct catalog facts",
             raw={"matched_rules": matched_rules},
         )

@@ -128,6 +128,8 @@ def check_acoustid(settings) -> bool:
     text = response.text[:220]
     if "invalid api key" in text.lower():
         return _status("acoustid", False, f"invalid API key: {text}")
+    if response.status_code == 400 and "invalid fingerprint" in text.lower():
+        return _status("acoustid", True, "API key reachable and fpcalc available; dummy fingerprint was rejected as expected")
     if not response.ok:
         return _status("acoustid", False, f"{response.status_code}: {text}")
     return _status("acoustid", True, "API key accepted and fpcalc available")

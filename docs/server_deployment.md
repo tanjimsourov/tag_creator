@@ -34,7 +34,7 @@ docker build -t tag_creator .
 
 ```powershell
 cd tag_creator
-docker build --build-arg INSTALL_LOCAL_AI=true -t tag_creator-ai .
+docker build --build-arg INSTALL_LOCAL_AI=true -t tag_creator:local-ai .
 ```
 
 Model files are not copied into the image. Mount them into:
@@ -66,6 +66,19 @@ docker run --rm --cpus=2 --env-file .env `
   -v D:/editorBackend/tag_ai:/app/models/local_ai:ro `
   tag_creator --input-dir media --report output/enrichment_report.csv --dry-run
 ```
+
+## Download Hugging Face CLAP Model
+
+The Essentia `.pb` models are small and stored in `D:\editorBackend\tag_ai`.
+The CLAP model is larger and is downloaded once into the same folder:
+
+```powershell
+docker run --rm --user root --entrypoint python --env-file .env `
+  -v D:/editorBackend/tag_ai:/app/models/local_ai `
+  tag_creator:local-ai scripts/download_hf_models.py
+```
+
+After download, normal enrichment runs mount the model folder as read-only.
 
 For cache-free test runs, use temporary in-memory data/log mounts:
 

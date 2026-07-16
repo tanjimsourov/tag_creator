@@ -64,6 +64,42 @@ tag_creator/models/local_ai/mtg_jamendo_musicnn.pb
 tag_creator/models/local_ai/mtg_jamendo_labels.txt
 ```
 
+### `clap_zero_shot`
+
+Uses LAION CLAP through Hugging Face Transformers for heavier zero-shot audio
+tagging. It scores the audio against configurable labels such as `genre: house`,
+`subgenre: dance pop`, `mood: energetic`, `occasion: retail background`,
+`weather: sunny`, `age_group: youth`, and `instrument: piano`.
+
+Best for:
+
+- mood / energy / occasion / theme
+- broad genre confirmation
+- instrument/vocal hints
+
+It does **not** identify factual catalog metadata such as title, artist, album,
+release year, ISRC, copyright, or lyrics.
+
+Model files are downloaded once into the mounted local-AI directory:
+
+```text
+tag_creator/models/local_ai/hf/
+```
+
+On the server this should be mounted from:
+
+```text
+D:\editorBackend\tag_ai
+```
+
+Docker download command:
+
+```powershell
+docker run --rm --user root --entrypoint python --env-file .env `
+  -v D:/editorBackend/tag_ai:/app/models/local_ai `
+  tag_creator:local-ai scripts/download_hf_models.py
+```
+
 ### Extra prediction heads (shared embedding)
 
 `essentia_discogs_effnet` computes the Discogs-EffNet embedding once and can run
@@ -111,9 +147,11 @@ If Windows cannot install `essentia-tensorflow`, run this layer on a Linux VM/se
 
 ```text
 LOCAL_AI_ENABLED=true
-LOCAL_AI_STAGE_PROVIDERS=essentia_features,essentia_discogs_effnet,musicnn_mtg_jamendo
+LOCAL_AI_STAGE_PROVIDERS=essentia_features,essentia_discogs_effnet,musicnn_mtg_jamendo,clap_zero_shot
 LOCAL_AI_TOP_N=12
-LOCAL_AI_MIN_SCORE=0.18
+LOCAL_AI_MIN_SCORE=0.12
+CLAP_MODEL_NAME=laion/clap-htsat-unfused
+CLAP_CACHE_DIR=models/local_ai/hf
 ```
 
 `essentia_features` needs only `LOCAL_AI_ENABLED=true`; the `.pb`-based providers
@@ -142,6 +180,7 @@ Stage 3: paid AI fallback, only if important tags are still missing
 
 ```powershell
 python scripts\verify_api_keys.py
+python scripts\download_hf_models.py
 python scripts\enrich_library.py --input-dir ..\ftp_downloads\mp3 --limit 1 --dry-run --no-resume
 ```
 

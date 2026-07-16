@@ -47,6 +47,7 @@ _INSTRUMENT_LABELS = {
     "violin",
     # MSD flat-tag instruments
     "acoustic", "instrumental",
+    "electronic beat",
 }
 
 # Occasion / usage / setting -> themes (and a subset -> occasion / season)
@@ -161,7 +162,8 @@ def _field_map(tags: list[dict[str, Any]], min_score: float) -> dict[str, str]:
     occasions: list[str] = []
     seasons: list[str] = []
     instruments: list[str] = []
-    has_vocals = False
+    vocals: list[str] = []
+    direct_fields: dict[str, str] = {}
 
     def _add(bucket: list[str], value: str) -> None:
         value = value.strip()
@@ -172,19 +174,54 @@ def _field_map(tags: list[dict[str, Any]], min_score: float) -> dict[str, str]:
         raw = str(tag.get("label", "")).strip()
         if not raw:
             continue
+        explicit_field = str(tag.get("field", "")).strip().lower()
         low = raw.lower()
-        head = str(tag.get("head", "")).lower()
-        category, value, extra = _categorize(raw, low, head)
+        if explicit_field in {
+            "energy",
+            "valence",
+            "danceability",
+            "language",
+            "occasion",
+            "weather",
+            "season",
+            "age_group",
+        }:
+            direct_fields.setdefault(explicit_field, _pretty(raw))
+            continue
+        if explicit_field in {
+            "genre",
+            "subgenre",
+            "mood",
+            "moods",
+            "instrument",
+            "instruments",
+            "vocals",
+            "themes",
+        }:
+            category = {
+                "subgenre": "style",
+                "moods": "mood",
+                "instrument": "instrument",
+                "instruments": "instrument",
+                "themes": "theme",
+            }.get(explicit_field, explicit_field)
+            value = _pretty(raw)
+            extra = ""
+        else:
+            head = str(tag.get("head", "")).lower()
+            category, value, extra = _categorize(raw, low, head)
         if category == "genre_hierarchy":
             _add(genres, value)
             if extra:
                 _add(styles, extra)
+        elif category == "style":
+            _add(styles, value)
         elif category == "genre":
             _add(genres, value)
         elif category == "instrument":
             _add(instruments, value)
         elif category == "vocals":
-            has_vocals = True
+            _add(vocals, "instrumental" if value.lower() == "instrumental" else "vocal")
         elif category == "mood":
             _add(moods, value)
         elif category == "theme":
@@ -212,8 +249,10 @@ def _field_map(tags: list[dict[str, Any]], min_score: float) -> dict[str, str]:
         fields["season"] = seasons[0]
     if instruments:
         fields["instruments"] = ", ".join(instruments[:8])
-    if has_vocals:
-        fields["vocals"] = "vocal"
+    if vocals:
+        fields["vocals"] = vocals[0]
+    for key, value in direct_fields.items():
+        fields.setdefault(key, value)
 
     # Provenance: the full ranked prediction list is always retained.
     score_labels = [
@@ -401,3 +440,53 @@ class MusicNNMtgJamendoClient(LocalAIAudioClient):
             "--top-n",
             str(self.settings.local_ai_top_n),
         ]
+
+
+class ClapZeroShotClient(LocalAIAudioClient):
+    """Heavier local AI descriptor layer using CLAP zero-shot audio/text matching."""
+
+    provider_name = "clap_zero_shot"
+
+    def model_paths(self) -> list[Path]:
+        # Hugging Face files are managed in clap_cache_dir, not fixed .pb files.
+        return []
+
+    def is_configured(self) -> bool:
+        if not self.settings.local_ai_enabled:
+            return False
+        if not self.settings.clap_label_specs:
+            return False
+        return (
+            importlib.util.find_spec("essentia") is not None
+            and importlib.util.find_spec("transformers") is not None
+            and importlib.util.find_spec("torch") is not None
+        )
+
+    def _cache_key(self, media: MediaFile) -> str:
+        payload = {
+            "provider": self.provider_name,
+            "path": str(media.path),
+            "size_bytes": media.size_bytes,
+            "mtime": media.mtime,
+            "model_name": self.settings.clap_model_name,
+            "label_specs": self.settings.clap_label_specs,
+            "top_n": self.settings.local_ai_top_n,
+            "min_score": self.settings.local_ai_min_score,
+        }
+        return _sha256_payload(payload)
+
+    def runner_args(self, media: MediaFile) -> list[str]:
+        args = [
+            "clap_zero_shot",
+            "--audio",
+            str(media.path),
+            "--model-name",
+            self.settings.clap_model_name,
+            "--cache-dir",
+            str(self.settings.clap_cache_dir),
+            "--top-n",
+            str(self.settings.local_ai_top_n),
+        ]
+        for spec in self.settings.clap_label_specs:
+            args.extend(["--label", spec])
+        return args

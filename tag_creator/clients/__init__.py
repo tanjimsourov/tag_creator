@@ -6,7 +6,7 @@ from .itunes import ITunesClient
 from .deezer import DeezerClient
 from .lastfm import LastFMClient
 from .local_cleanup import LocalCleanupClient
-from .local_ai_audio import EssentiaDiscogsEffnetClient, EssentiaFeaturesClient, MusicNNMtgJamendoClient
+from .local_ai_audio import ClapZeroShotClient, EssentiaDiscogsEffnetClient, EssentiaFeaturesClient, MusicNNMtgJamendoClient
 from .musicbrainz import MusicBrainzClient
 from .spotify import SpotifyClient
 from .sonoteller import SonotellerClient
@@ -26,6 +26,7 @@ __all__ = [
     "EssentiaFeaturesClient",
     "EssentiaDiscogsEffnetClient",
     "MusicNNMtgJamendoClient",
+    "ClapZeroShotClient",
     "MusicBrainzClient",
     "SpotifyClient",
     "SonotellerClient",

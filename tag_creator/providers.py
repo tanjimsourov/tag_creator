@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .clients import (
     AcoustIDClient,
+    ClapZeroShotClient,
     CoverArtArchiveClient,
     DiscogsClient,
     GeniusClient,
@@ -38,6 +39,7 @@ def _all_clients(settings: Settings, store: CsvStore, rate_limiter: RateLimiter)
         "essentia_features": EssentiaFeaturesClient(store, rate_limiter, settings),
         "essentia_discogs_effnet": EssentiaDiscogsEffnetClient(store, rate_limiter, settings),
         "musicnn_mtg_jamendo": MusicNNMtgJamendoClient(store, rate_limiter, settings),
+        "clap_zero_shot": ClapZeroShotClient(store, rate_limiter, settings),
         "wikidata": WikidataClient(store, rate_limiter),
         "web_discovery": WebDiscoveryClient(store, rate_limiter, settings),
         "rules_inference": RulesInferenceClient(store, rate_limiter),
