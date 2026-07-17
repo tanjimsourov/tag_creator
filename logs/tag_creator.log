@@ -21,3 +21,45 @@
 13:38:12 WARNING [cb927013] tag_creator.clients.base: circuit breaker OPEN for discogs after 5 consecutive failures; skipping it for this run
 13:38:25 INFO [cb927013] tag_creator.csv_store: compacted media_inventory.csv: 12 rows -> 7 unique
 13:38:25 INFO [cb927013] tag_creator.csv_store: compacted enrichment_state.csv: 12 rows -> 7 unique
+22:32:13 INFO [97ec6ec6] tag_creator.tag_creator.pipeline: enriching 1 files with 1 worker(s)
+22:32:16 ERROR [97ec6ec6] tag_creator.tag_creator.pipeline: acoustid failed for C:\Users\spicy\Documents\projects\smc\ds-local hero\tag_creator\test_media\free_ai_5\217HALO - Golden Hour.mp3
+Traceback (most recent call last):
+  File "C:\Users\spicy\Documents\projects\smc\ds-local hero\tag_creator\tag_creator\pipeline.py", line 66, in _run_clients
+    result = client.enrich(media)
+  File "C:\Users\spicy\Documents\projects\smc\ds-local hero\tag_creator\tag_creator\clients\acoustid.py", line 42, in enrich
+    fp = self.fingerprint(media.path)
+  File "C:\Users\spicy\Documents\projects\smc\ds-local hero\tag_creator\tag_creator\clients\acoustid.py", line 28, in fingerprint
+    completed = subprocess.run(
+        [self.fpcalc_path, "-json", str(path)],
+    ...<2 lines>...
+        timeout=90,
+    )
+  File "C:\Users\spicy\AppData\Local\Programs\Python\Python314\Lib\subprocess.py", line 554, in run
+    with Popen(*popenargs, **kwargs) as process:
+         ~~~~~^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\spicy\AppData\Local\Programs\Python\Python314\Lib\subprocess.py", line 1038, in __init__
+    self._execute_child(args, executable, preexec_fn, close_fds,
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                        pass_fds, cwd, env,
+                        ^^^^^^^^^^^^^^^^^^^
+    ...<5 lines>...
+                        gid, gids, uid, umask,
+                        ^^^^^^^^^^^^^^^^^^^^^^
+                        start_new_session, process_group)
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\spicy\AppData\Local\Programs\Python\Python314\Lib\subprocess.py", line 1552, in _execute_child
+    hp, ht, pid, tid = _winapi.CreateProcess(executable, args,
+                       ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+                             # no special security
+                             ^^^^^^^^^^^^^^^^^^^^^
+    ...<4 lines>...
+                             cwd,
+                             ^^^^
+                             startupinfo)
+                             ^^^^^^^^^^^^
+FileNotFoundError: [WinError 2] The system cannot find the file specified
+22:34:10 INFO [aba7dbeb] tag_creator.tag_creator.pipeline: enriching 1 files with 1 worker(s)
+22:43:24 INFO [ccff9720] tag_creator.tag_creator.pipeline: enriching 1 files with 1 worker(s)
+22:57:05 INFO [796dc92c] tag_creator.tag_creator.pipeline: enriching 1 files with 1 worker(s)
+22:58:13 INFO [796dc92c] tag_creator.tag_creator.csv_store: compacted media_inventory.csv: 11 rows -> 7 unique
+22:58:13 INFO [796dc92c] tag_creator.tag_creator.csv_store: compacted enrichment_state.csv: 11 rows -> 7 unique

@@ -25,6 +25,7 @@ def _check_config(settings: Settings) -> int:
     print(f"  output_dir           = {settings.output_dir}")
     print(f"  data_dir             = {settings.data_dir}")
     print(f"  report_csv           = {settings.report_csv}")
+    print(f"  final_csv            = {settings.final_csv}")
     print(f"  worker_threads       = {settings.worker_threads}")
     print(f"  cpu_threads          = {settings.cpu_threads}")
     print(f"  hybrid_mode          = {settings.hybrid_mode}")
@@ -54,6 +55,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Enrich media tags from multiple open-source metadata providers.")
     parser.add_argument("--input-dir")
     parser.add_argument("--report")
+    parser.add_argument("--final-csv", action="store_true", help="write the clean final dataset CSV instead of the debug report")
+    parser.add_argument("--no-debug-output", action="store_true", help="do not write JSONL or run_summary side files")
     parser.add_argument("--limit", type=int)
     parser.add_argument("--workers", type=int, help="parallel worker threads (default from WORKER_THREADS/CPU count)")
     parser.add_argument("--dry-run", action="store_true")
@@ -105,8 +108,10 @@ def main(argv: list[str] | None = None) -> int:
             settings,
             store,
             input_dir=Path(args.input_dir).resolve() if args.input_dir else None,
-            report_csv=Path(args.report).resolve() if args.report else None,
+            report_csv=Path(args.report).resolve() if args.report else (settings.final_csv if args.final_csv else None),
             limit=args.limit,
+            final_csv=args.final_csv,
+            debug_output=not args.no_debug_output,
         )
     except KeyboardInterrupt:
         # Belt-and-suspenders: the pipeline already handles interrupts, but if one
@@ -124,6 +129,7 @@ def main(argv: list[str] | None = None) -> int:
         f"{summary.duration_seconds}s with {summary.workers} worker(s). "
         f"Updated={updated}, no_change={no_change}, failed={failed}, paid_calls={summary.paid_calls}"
     )
-    print(f"Report: {summary.report_path}")
-    print(f"Run summary: {settings.output_dir / 'run_summary.json'}")
+    print(f"{'Final CSV' if args.final_csv else 'Report'}: {summary.report_path}")
+    if not args.no_debug_output:
+        print(f"Run summary: {settings.output_dir / 'run_summary.json'}")
     return 0

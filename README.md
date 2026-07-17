@@ -99,7 +99,41 @@ Set CPU usage in `.env`:
 TAG_CREATOR_CPU_THREADS=2
 ```
 
-Build and run:
+### Simple Final CSV Workflow
+
+Build once:
+
+```powershell
+cd D:\editorBackend\tag_creator
+python main.py --build --limit 1
+```
+
+After that, update `.env` only:
+
+```text
+INPUT_DIR=D:\path\to\mp3_or_mp4_folder
+FINAL_CSV=output\final_enriched_tags.csv
+```
+
+Then run:
+
+```powershell
+python main.py
+```
+
+This runs Docker with the correct mounts and writes one clean CSV:
+
+```text
+output/final_enriched_tags.csv
+```
+
+For a quick test:
+
+```powershell
+python main.py --limit 5
+```
+
+### Manual Docker
 
 ```powershell
 docker build -t tag_creator .

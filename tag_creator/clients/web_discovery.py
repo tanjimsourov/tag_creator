@@ -261,8 +261,17 @@ class WebDiscoveryClient(ProviderClient):
                 continue
             queries.extend(
                 [
+                    f'"{track_query}" artist title album year genre',
+                    f'"{track_query}" release date album label catalog number',
+                    f'"{track_query}" isrc composer publisher copyright',
                     f'"{track_query}" genre bpm key mood',
                     f'"{track_query}" tempo key danceability energy',
+                    f'"{track_query}" language instruments vocals',
+                    f'site:musicbrainz.org "{track_query}" recording',
+                    f'site:discogs.com "{track_query}" release',
+                    f'site:last.fm "{track_query}"',
+                    f'site:deezer.com "{track_query}"',
+                    f'site:genius.com "{track_query}"',
                     f'site:tunebat.com "{track_query}"',
                     f'site:musicstax.com "{track_query}"',
                     f'site:songbpm.com "{track_query}"',

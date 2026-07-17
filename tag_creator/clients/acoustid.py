@@ -17,7 +17,12 @@ class AcoustIDClient(ProviderClient):
     def __init__(self, db, rate_limiter, settings: Settings) -> None:
         super().__init__(db, rate_limiter)
         self.api_key = settings.acoustid_api_key
-        self.fpcalc_path = settings.fpcalc_path or shutil.which("fpcalc") or ""
+        configured_fpcalc = settings.fpcalc_path.strip()
+        if configured_fpcalc:
+            resolved = shutil.which(configured_fpcalc) if not Path(configured_fpcalc).is_file() else configured_fpcalc
+            self.fpcalc_path = resolved or ""
+        else:
+            self.fpcalc_path = shutil.which("fpcalc") or ""
 
     def is_configured(self) -> bool:
         return bool(self.api_key and self.fpcalc_path)
@@ -83,4 +88,3 @@ class AcoustIDClient(ProviderClient):
             raw={"release_mbid": release_mbid},
             notes="audio fingerprint",
         )
-

@@ -78,7 +78,7 @@ class MusicBrainzClient(ProviderClient):
             )
             recordings = data.get("recordings", []) if data else []
 
-        if not recordings:
+        if not recordings and artist:
             cleaned_title = self._clean_title(title)
             strict_parts = []
             if title:

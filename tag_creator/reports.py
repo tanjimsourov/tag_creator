@@ -68,6 +68,48 @@ REPORT_FIELDNAMES = [
     "notes",
 ]
 
+FINAL_CSV_FIELDNAMES = [
+    "filename",
+    "file_path",
+    "title",
+    "artist",
+    "album",
+    "album_artist",
+    "year",
+    "date",
+    "genre",
+    "subgenre",
+    "mood",
+    "moods",
+    "energy",
+    "valence",
+    "danceability",
+    "key",
+    "language",
+    "instruments",
+    "vocals",
+    "themes",
+    "occasion",
+    "weather",
+    "season",
+    "age_group",
+    "track_number",
+    "disc_number",
+    "composer",
+    "publisher",
+    "copyright",
+    "bpm",
+    "isrc",
+    "label",
+    "catalog_number",
+    "has_cover_art",
+    "cover_art_url",
+    "quality_score",
+    "validation_status",
+    "missing_tags",
+    "sources",
+]
+
 
 FULL_EXPORT_FIELDS = [
     "filename",
@@ -169,6 +211,98 @@ def result_to_row(result: EnrichmentResult) -> dict[str, str]:
     }
 
 
+def _derive_final_fields(fields: dict[str, str]) -> dict[str, str]:
+    derived = dict(fields)
+    if not derived.get("album_artist") and derived.get("artist"):
+        derived["album_artist"] = derived["artist"]
+    if not derived.get("date") and derived.get("year"):
+        derived["date"] = derived["year"]
+    if not derived.get("year") and derived.get("date"):
+        derived["year"] = derived["date"][:4]
+    if not derived.get("moods") and derived.get("mood"):
+        derived["moods"] = derived["mood"]
+    if not derived.get("mood") and derived.get("moods"):
+        derived["mood"] = derived["moods"].split(",", 1)[0].strip()
+    if not derived.get("subgenre") and derived.get("genre"):
+        derived["subgenre"] = derived["genre"]
+    return derived
+
+
+def _fill_final_blanks(row: dict[str, str], missing_value: str) -> dict[str, str]:
+    filled = dict(row)
+    for key in FINAL_CSV_FIELDNAMES:
+        value = filled.get(key, "")
+        if value is None or str(value).strip() == "":
+            filled[key] = missing_value
+    return filled
+
+
+def result_to_final_row(
+    result: EnrichmentResult,
+    *,
+    no_blanks: bool = False,
+    missing_value: str = "NEEDS_REVIEW",
+) -> dict[str, str]:
+    """Clean dataset row for production import.
+
+    This intentionally excludes debug-heavy report fields such as provider raw
+    JSON. It still keeps minimal validation columns so downstream systems know
+    whether a row is fully trusted, usable with review, or incomplete.
+    """
+    fields = _derive_final_fields(result.merged.fields)
+    confidences = list(result.merged.field_confidence.values())
+    quality_score = round(sum(confidences) / len(confidences), 3) if confidences else 0.0
+    missing = result.merged.missing_required
+    if result.error or result.status in {"failed", "write_failed"}:
+        validation_status = "failed"
+    elif missing:
+        validation_status = "needs_review"
+    else:
+        validation_status = "validated"
+    row = {
+        "filename": result.media.path.name,
+        "file_path": str(result.media.path),
+        "title": fields.get("title", ""),
+        "artist": fields.get("artist", ""),
+        "album": fields.get("album", ""),
+        "album_artist": fields.get("album_artist", ""),
+        "year": fields.get("year", ""),
+        "date": fields.get("date", ""),
+        "genre": fields.get("genre", ""),
+        "subgenre": fields.get("subgenre", ""),
+        "mood": fields.get("mood", ""),
+        "moods": fields.get("moods", ""),
+        "energy": fields.get("energy", ""),
+        "valence": fields.get("valence", ""),
+        "danceability": fields.get("danceability", ""),
+        "key": fields.get("key", ""),
+        "language": fields.get("language", ""),
+        "instruments": fields.get("instruments", ""),
+        "vocals": fields.get("vocals", ""),
+        "themes": fields.get("themes", ""),
+        "occasion": fields.get("occasion", ""),
+        "weather": fields.get("weather", ""),
+        "season": fields.get("season", ""),
+        "age_group": fields.get("age_group", ""),
+        "track_number": fields.get("track_number", ""),
+        "disc_number": fields.get("disc_number", ""),
+        "composer": fields.get("composer", ""),
+        "publisher": fields.get("publisher", ""),
+        "copyright": fields.get("copyright", ""),
+        "bpm": fields.get("bpm", ""),
+        "isrc": fields.get("isrc", ""),
+        "label": fields.get("label", ""),
+        "catalog_number": fields.get("catalog_number", ""),
+        "has_cover_art": "yes" if result.media.has_cover_art or fields.get("cover_art_url") else "no",
+        "cover_art_url": fields.get("cover_art_url", ""),
+        "quality_score": str(quality_score),
+        "validation_status": validation_status,
+        "missing_tags": "; ".join(missing),
+        "sources": json.dumps(result.merged.field_sources, ensure_ascii=False),
+    }
+    return _fill_final_blanks(row, missing_value) if no_blanks else row
+
+
 def stage_summary(result: EnrichmentResult) -> str:
     stages: dict[str, set[str]] = {}
     for provider in result.provider_results:
@@ -226,13 +360,27 @@ class StreamingReportWriter:
 
     FLUSH_EVERY = 200
 
-    def __init__(self, csv_path: Path, append: bool = False) -> None:
+    def __init__(
+        self,
+        csv_path: Path,
+        append: bool = False,
+        *,
+        final_csv: bool = False,
+        write_jsonl: bool = True,
+        final_no_blanks: bool = False,
+        final_missing_value: str = "NEEDS_REVIEW",
+    ) -> None:
         self.csv_path = Path(csv_path)
         self.jsonl_path = self.csv_path.with_suffix(".jsonl")
         self.csv_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._pending = 0
         self._seen: set[str] = set()
+        self.final_csv = final_csv
+        self.write_jsonl = write_jsonl
+        self.final_no_blanks = final_no_blanks
+        self.final_missing_value = final_missing_value
+        self.fieldnames = FINAL_CSV_FIELDNAMES if final_csv else REPORT_FIELDNAMES
 
         resume = append and self.csv_path.exists() and self.csv_path.stat().st_size > 0
         if resume:
@@ -242,10 +390,10 @@ class StreamingReportWriter:
         # BOM only on a fresh file; appending utf-8-sig would inject a stray BOM.
         csv_encoding = "utf-8" if resume else "utf-8-sig"
         self._csv_file = self.csv_path.open(csv_mode, newline="", encoding=csv_encoding)
-        self._writer = csv.DictWriter(self._csv_file, fieldnames=REPORT_FIELDNAMES, extrasaction="ignore")
+        self._writer = csv.DictWriter(self._csv_file, fieldnames=self.fieldnames, extrasaction="ignore")
         if not resume:
             self._writer.writeheader()
-        self._jsonl_file = self.jsonl_path.open(jsonl_mode, encoding="utf-8")
+        self._jsonl_file = self.jsonl_path.open(jsonl_mode, encoding="utf-8") if write_jsonl else None
 
     @staticmethod
     def _existing_paths(csv_path: Path) -> set[str]:
@@ -261,12 +409,22 @@ class StreamingReportWriter:
             if file_path in self._seen:
                 return False
             self._seen.add(file_path)
-            self._writer.writerow(result_to_row(result))
-            self._jsonl_file.write(json.dumps(_jsonl_record(result), ensure_ascii=False) + "\n")
+            self._writer.writerow(
+                result_to_final_row(
+                    result,
+                    no_blanks=self.final_no_blanks,
+                    missing_value=self.final_missing_value,
+                )
+                if self.final_csv
+                else result_to_row(result)
+            )
+            if self._jsonl_file is not None:
+                self._jsonl_file.write(json.dumps(_jsonl_record(result), ensure_ascii=False) + "\n")
             self._pending += 1
             if self._pending >= self.FLUSH_EVERY:
                 self._csv_file.flush()
-                self._jsonl_file.flush()
+                if self._jsonl_file is not None:
+                    self._jsonl_file.flush()
                 self._pending = 0
         return True
 
@@ -274,10 +432,12 @@ class StreamingReportWriter:
         with self._lock:
             try:
                 self._csv_file.flush()
-                self._jsonl_file.flush()
+                if self._jsonl_file is not None:
+                    self._jsonl_file.flush()
             finally:
                 self._csv_file.close()
-                self._jsonl_file.close()
+                if self._jsonl_file is not None:
+                    self._jsonl_file.close()
 
     def __enter__(self) -> "StreamingReportWriter":
         return self

@@ -27,6 +27,8 @@ class DiscogsClient(ProviderClient):
             return None
         ranked = []
         for artist, title in candidates:
+            if not artist and not album:
+                continue
             query = " ".join(item for item in [artist, album or title] if item)
             params = {"q": query, "type": "release", "per_page": 8}
             if self.token:
@@ -45,8 +47,8 @@ class DiscogsClient(ProviderClient):
                 candidate_artist = candidate_title.split(" - ", 1)[0] if " - " in candidate_title else ""
                 candidate_album = candidate_title.split(" - ", 1)[-1]
                 album_score = similarity(album or title, candidate_album)
-                artist_score = similarity(artist, candidate_artist) if artist and candidate_artist else 0.55
-                if album_score >= 0.45 and artist_score >= 0.40:
+                artist_score = similarity(artist, candidate_artist) if artist and candidate_artist else 0.0
+                if album_score >= 0.55 and artist_score >= 0.55:
                     ranked.append(((album_score * 0.65) + (artist_score * 0.35), album_score, artist_score, query, candidate))
         if not ranked:
             return ProviderResult("discogs", 0, {}, notes="no match")

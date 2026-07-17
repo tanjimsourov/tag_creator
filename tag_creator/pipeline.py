@@ -118,6 +118,32 @@ def enrich_one(
             required_tags=settings.required_tags,
         )
 
+        if interim.missing_required:
+            # Second catalog pass: if AcoustID/iTunes/Deezer found cleaner
+            # title/artist data than the original file/filename, let high-trust
+            # catalog providers verify and enrich from that better identity.
+            stage1_verify_media = replace(media, tags={**media.tags, **interim.fields})
+            verifier_names = [
+                name
+                for name in ("musicbrainz", "discogs", "wikidata", "lastfm", "cover_art_archive")
+                if name in settings.free_stage_providers
+            ]
+            provider_results.extend(
+                _run_clients(
+                    stage1_verify_media,
+                    _select_clients(client_map, verifier_names),
+                    "stage1_verify",
+                )
+            )
+
+        interim = merge_metadata(
+            media=media,
+            results=provider_results,
+            provider_weights=settings.provider_weights,
+            min_field_confidence=settings.min_field_confidence,
+            required_tags=settings.required_tags,
+        )
+
         if settings.local_ai_stage_providers and (interim.missing_required or settings.local_ai_always_run):
             stage2_media = replace(media, tags={**media.tags, **interim.fields})
             local_ai_clients = _select_clients(client_map, settings.local_ai_stage_providers)
@@ -269,6 +295,8 @@ def enrich_library(
     input_dir: Path | None = None,
     report_csv: Path | None = None,
     limit: int | None = None,
+    final_csv: bool = False,
+    debug_output: bool = True,
 ) -> RunSummary:
     settings.output_dir.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
@@ -299,7 +327,14 @@ def enrich_library(
     latency_count: dict[str, int] = {}
     LOGGER.info("enriching %s files with %s worker(s)", len(pending), workers)
 
-    writer = StreamingReportWriter(report_path, append=settings.resume)
+    writer = StreamingReportWriter(
+        report_path,
+        append=settings.resume,
+        final_csv=final_csv,
+        write_jsonl=debug_output,
+        final_no_blanks=settings.final_no_blanks,
+        final_missing_value=settings.final_missing_value,
+    )
     executor = ThreadPoolExecutor(max_workers=workers)
     futures = {
         executor.submit(_safe_enrich_one, media, client_map, settings, paid_guard): media for media in pending
@@ -345,10 +380,11 @@ def enrich_library(
     }
     summary.duration_seconds = round(time.monotonic() - started, 3)
 
-    try:
-        write_run_summary(settings.output_dir / "run_summary.json", summary)
-    except OSError as exc:
-        LOGGER.warning("could not write run_summary.json: %s", exc)
+    if debug_output:
+        try:
+            write_run_summary(settings.output_dir / "run_summary.json", summary)
+        except OSError as exc:
+            LOGGER.warning("could not write run_summary.json: %s", exc)
 
     if summary.interrupted:
         LOGGER.warning("run ended early after %s files; rerun the same command to resume", summary.written_rows)

@@ -100,6 +100,9 @@ class Settings:
     output_dir: Path
     data_dir: Path
     report_csv: Path
+    final_csv: Path
+    final_no_blanks: bool
+    final_missing_value: str
     dry_run: bool
     write_tags: bool
     write_cover_art: bool
@@ -304,6 +307,9 @@ def load_settings() -> Settings:
         output_dir=resolve_path(os.environ.get("OUTPUT_DIR", "output")),
         data_dir=resolve_path(os.environ.get("DATA_DIR", "data")),
         report_csv=resolve_path(os.environ.get("REPORT_CSV", "output/enrichment_report.csv")),
+        final_csv=resolve_path(os.environ.get("FINAL_CSV", "output/final_enriched_tags.csv")),
+        final_no_blanks=_bool("FINAL_NO_BLANKS", True),
+        final_missing_value=os.environ.get("FINAL_MISSING_VALUE", "NEEDS_REVIEW").strip() or "NEEDS_REVIEW",
         dry_run=_bool("DRY_RUN", True),
         write_tags=_bool("WRITE_TAGS", False),
         write_cover_art=_bool("WRITE_COVER_ART", False),
@@ -430,6 +436,11 @@ def load_settings() -> Settings:
                 "chosic.com",
                 "wikidata.org",
                 "wikipedia.org",
+                "musicbrainz.org",
+                "discogs.com",
+                "last.fm",
+                "deezer.com",
+                "genius.com",
             ],
         ),
         web_search_endpoint=os.environ.get("WEB_SEARCH_ENDPOINT", "https://html.duckduckgo.com/html/").strip(),

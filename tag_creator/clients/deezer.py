@@ -18,6 +18,8 @@ class DeezerClient(ProviderClient):
             return None
         ranked = []
         for artist, title in candidates:
+            if not artist:
+                continue
             query = " ".join(item for item in [artist, title] if item)
             data = self.get_json(
                 f"{self.base_url}/search",
