@@ -60,6 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workers", type=int, help="override WORKER_THREADS for this run")
     parser.add_argument("--cpus", default=None, help="Docker CPU quota, for example 2")
     parser.add_argument("--keep-cache", action="store_true", help="persist data/log CSV cache instead of tmpfs")
+    parser.add_argument("--keep-output-history", action="store_true", help="do not remove old output CSV/JSON files before this run")
     return parser
 
 
@@ -79,17 +80,17 @@ def main() -> int:
 
     output_dir = _resolve_host_path(env.get("OUTPUT_DIR", ""), "output")
     output_dir.mkdir(parents=True, exist_ok=True)
-    final_csv_raw = env.get("FINAL_CSV", "output/final_enriched_tags.csv")
-    final_csv = _resolve_host_path(final_csv_raw, "output/final_enriched_tags.csv")
-    if output_dir not in final_csv.parents and final_csv != output_dir:
-        print("FINAL_CSV must be inside OUTPUT_DIR for the simple Docker runner.", file=sys.stderr)
-        print(f"OUTPUT_DIR={output_dir}", file=sys.stderr)
-        print(f"FINAL_CSV={final_csv}", file=sys.stderr)
-        return 2
+    final_name = f"{host_input.name}.csv"
+    final_csv = output_dir / final_name
     final_name = final_csv.name
-    for stale in (final_csv, final_csv.with_suffix(".jsonl")):
-        if stale.exists():
-            stale.unlink()
+    if not args.keep_output_history:
+        for stale in output_dir.iterdir():
+            if stale.is_file() and stale.suffix.lower() in {".csv", ".json", ".jsonl"}:
+                stale.unlink()
+    else:
+        for stale in (final_csv, final_csv.with_suffix(".jsonl"), output_dir / "run_summary.json"):
+            if stale.exists():
+                stale.unlink()
 
     local_ai_host = _resolve_host_path(env.get("LOCAL_AI_HOST_DIR", ""), "models/local_ai")
     if not local_ai_host.exists():

@@ -101,43 +101,58 @@ TAG_CREATOR_CPU_THREADS=2
 
 ### Simple Final CSV Workflow
 
-Build once:
+Build once with Docker:
 
 ```powershell
 cd D:\editorBackend\tag_creator
-python main.py --build --limit 1
+docker build --build-arg INSTALL_LOCAL_AI=true -t tag_creator:local-ai .
 ```
 
-After that, update `.env` only:
+After that, update `.env` only. `INPUT_DIR` is the host folder that contains MP3/MP4 files:
 
 ```text
 INPUT_DIR=D:\path\to\mp3_or_mp4_folder
-FINAL_CSV=output\final_enriched_tags.csv
+OUTPUT_DIR=output
+LOCAL_AI_HOST_DIR=D:\editorBackend\tag_ai
 ```
 
-Then run:
+Then run. The output folder is cleaned and one final CSV is written using the input folder name, for example `output\mp3_or_mp4_folder.csv`.
 
 ```powershell
+$ROOT = (Get-Location).Path
+$INPUT_DIR = (Select-String -Path .env -Pattern '^INPUT_DIR=').Line.Split('=',2)[1].Trim()
+$INPUT_NAME = Split-Path -Leaf $INPUT_DIR
+
+docker run --rm --user root --cpus=2 --env-file .env `
+  --tmpfs /app/data --tmpfs /app/logs `
+  -v "${ROOT}\output:/app/output" `
+  -v "${INPUT_DIR}:/app/input_media:ro" `
+  -v "D:\editorBackend\tag_ai:/app/models/local_ai:ro" `
+  tag_creator:local-ai --input-dir /app/input_media --report "/app/output/${INPUT_NAME}.csv" `
+  --final-csv --no-debug-output --dry-run --no-resume
+```
+
+For a quick five-file test, add `--limit 5` at the end.
+
+If Python is installed on the server, the helper command does the same Docker run automatically and also cleans old CSV/JSON outputs:
+
+```powershell
+python main.py --build --limit 5
 python main.py
-```
-
-This runs Docker with the correct mounts and writes one clean CSV:
-
-```text
-output/final_enriched_tags.csv
-```
-
-For a quick test:
-
-```powershell
-python main.py --limit 5
 ```
 
 ### Manual Docker
 
 ```powershell
-docker build -t tag_creator .
-docker run --rm --cpus=2 --env-file .env tag_creator --input-dir media --dry-run
+$ROOT = (Get-Location).Path
+docker build --build-arg INSTALL_LOCAL_AI=true -t tag_creator:local-ai .
+docker run --rm --user root --cpus=2 --env-file .env `
+  --tmpfs /app/data --tmpfs /app/logs `
+  -v "${ROOT}\output:/app/output" `
+  -v "D:\path\to\mp3_or_mp4_folder:/app/input_media:ro" `
+  -v "D:\editorBackend\tag_ai:/app/models/local_ai:ro" `
+  tag_creator:local-ai --input-dir /app/input_media --report /app/output/final_tags.csv `
+  --final-csv --no-debug-output --dry-run --no-resume
 ```
 
 More notes: `docs/server_deployment.md`.
@@ -173,8 +188,9 @@ Details: `docs/hybrid_pipeline.md`.
 
 ## Output
 
-- `output/enrichment_report.csv` - per-file enrichment result.
-- `output/enrichment_report.jsonl` - detailed provider/source data.
+- Simple Docker/helper run: one final enriched CSV named after the input folder.
+- Manual debug run: `output/enrichment_report.csv` - per-file enrichment result.
+- Manual debug run: `output/enrichment_report.jsonl` - detailed provider/source data.
 - `data/api_cache.csv` - provider response cache.
 - `data/media_inventory.csv` - scanned file inventory.
 - `data/enrichment_state.csv` - per-file resume status.

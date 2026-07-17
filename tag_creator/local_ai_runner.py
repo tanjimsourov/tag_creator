@@ -157,6 +157,99 @@ def _split_label_spec(spec: str) -> tuple[str, str]:
     return field.strip().lower(), value.strip()
 
 
+def _clap_prompts(field: str, value: str) -> list[str]:
+    """Prompt ensemble for stronger zero-shot matching.
+
+    CLAP is sensitive to wording. A small field-specific prompt ensemble gives a
+    more stable score than one generic sentence, especially for business tags
+    such as retail occasion, energy, season and age group.
+    """
+    field = field.lower().strip()
+    value = value.strip()
+    if field == "genre":
+        return [
+            f"a {value} music track",
+            f"this song belongs to the {value} genre",
+            f"music with a {value} sound",
+        ]
+    if field == "subgenre":
+        return [
+            f"a {value} music track",
+            f"this song has a {value} style",
+            f"music with {value} production",
+        ]
+    if field in {"mood", "moods"}:
+        return [
+            f"music that feels {value}",
+            f"a song with a {value} mood",
+            f"audio with a {value} emotional tone",
+        ]
+    if field == "energy":
+        return [
+            f"a song with {value} energy",
+            f"music that sounds {value} energy",
+            f"a track with {value} intensity",
+        ]
+    if field == "valence":
+        return [
+            f"music with a {value} emotional feeling",
+            f"a song that sounds {value}",
+            f"audio with {value} valence",
+        ]
+    if field == "danceability":
+        return [
+            f"a {value} danceable music track",
+            f"music suitable for dancing at a {value} level",
+            f"a song with {value} rhythm movement",
+        ]
+    if field in {"instrument", "instruments"}:
+        return [
+            f"music featuring {value}",
+            f"a song with {value} instrumentation",
+            f"audio where {value} is present",
+        ]
+    if field == "vocals":
+        return [
+            f"a {value} music track",
+            f"music with {value}",
+            f"audio that is {value}",
+        ]
+    if field == "occasion":
+        return [
+            f"music suitable for {value}",
+            f"a track for {value}",
+            f"background music for {value}",
+        ]
+    if field == "weather":
+        return [
+            f"music suitable for {value} weather",
+            f"a song for a {value} day",
+            f"background music matching {value} weather",
+        ]
+    if field == "season":
+        return [
+            f"music suitable for {value}",
+            f"a song with a {value} feeling",
+            f"background music for {value}",
+        ]
+    if field == "age_group":
+        return [
+            f"music suitable for a {value} audience",
+            f"a song for {value} listeners",
+            f"retail music aimed at {value}",
+        ]
+    if field == "language":
+        return [
+            f"a song with {value} vocals",
+            f"music sung in {value}",
+            f"lyrics language is {value}",
+        ]
+    return [
+        f"a music track with {field} {value}",
+        f"music where {field} is {value}",
+    ]
+
+
 def run_clap_zero_shot(args: argparse.Namespace) -> dict[str, Any]:
     """Zero-shot audio tagging with LAION CLAP.
 
@@ -180,7 +273,12 @@ def run_clap_zero_shot(args: argparse.Namespace) -> dict[str, Any]:
     if not label_specs:
         raise ValueError("at least one --label is required")
     fields_values = [_split_label_spec(spec) for spec in label_specs]
-    prompts = [f"a music track with {field} {value}" for field, value in fields_values]
+    prompt_specs: list[tuple[int, str, str, str]] = []
+    prompts: list[str] = []
+    for spec_index, (field, value) in enumerate(fields_values):
+        for prompt in _clap_prompts(field, value):
+            prompt_specs.append((spec_index, field, value, prompt))
+            prompts.append(prompt)
 
     processor = ClapProcessor.from_pretrained(args.model_name, cache_dir=str(args.cache_dir))
     model = ClapModel.from_pretrained(args.model_name, cache_dir=str(args.cache_dir))
@@ -190,17 +288,31 @@ def run_clap_zero_shot(args: argparse.Namespace) -> dict[str, Any]:
         outputs = model(**inputs)
         scores = outputs.logits_per_audio.softmax(dim=-1).cpu().numpy()[0]
 
-    ranked = np.argsort(scores)[::-1][: args.top_n]
+    # Aggregate prompt variants back to the original label spec. Max keeps a
+    # strong exact wording from being diluted by weaker variants.
+    aggregated: dict[int, dict[str, Any]] = {}
+    for prompt_index, score in enumerate(scores):
+        spec_index, field, value, prompt = prompt_specs[prompt_index]
+        entry = aggregated.setdefault(
+            spec_index,
+            {"field": field, "label": value, "score": 0.0, "best_prompt": prompt, "prompt_count": 0},
+        )
+        entry["prompt_count"] += 1
+        if float(score) > float(entry["score"]):
+            entry["score"] = float(score)
+            entry["best_prompt"] = prompt
+
+    ranked = sorted(aggregated.values(), key=lambda item: float(item["score"]), reverse=True)[: args.top_n]
     tags: list[dict[str, Any]] = []
-    for index in ranked:
-        field, value = fields_values[int(index)]
+    for item in ranked:
         tags.append(
             {
-                "field": field,
-                "label": value,
-                "score": round(float(scores[int(index)]), 6),
+                "field": item["field"],
+                "label": item["label"],
+                "score": round(float(item["score"]), 6),
                 "head": "clap_zero_shot",
-                "prompt": prompts[int(index)],
+                "prompt": item["best_prompt"],
+                "prompt_count": item["prompt_count"],
             }
         )
     return {

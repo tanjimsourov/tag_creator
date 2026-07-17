@@ -1,0 +1,21 @@
+{
+  "report_path": "C:\\Users\\spicy\\Documents\\projects\\smc\\ds-local hero\\tag_creator\\.tmp\\pytest_run3\\test_enrich_library_writes_rep0\\output\\report.csv",
+  "total_files": 3,
+  "skipped": 0,
+  "written_rows": 3,
+  "interrupted": false,
+  "status_counts": {
+    "dry_run_done": 3
+  },
+  "provider_hits": {
+    "free": 3
+  },
+  "provider_errors": {},
+  "provider_latency_ms": {
+    "free": 0.0
+  },
+  "paid_calls": 0,
+  "web_fetches": 0,
+  "duration_seconds": 0.016,
+  "workers": 1
+}
