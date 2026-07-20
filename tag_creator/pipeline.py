@@ -91,6 +91,16 @@ def _with_provider_fields(media: MediaFile, provider_results: list[ProviderResul
     return replace(media, tags=tags)
 
 
+def _identity_changed(media: MediaFile, fields: dict[str, str]) -> bool:
+    """Whether stage 1 found a better identity worth a second catalog lookup."""
+    for field in ("title", "artist", "album"):
+        before = " ".join(media.tags.get(field, "").lower().split())
+        after = " ".join(fields.get(field, "").lower().split())
+        if after and after != before:
+            return True
+    return False
+
+
 def enrich_one(
     media: MediaFile,
     client_map: dict,
@@ -118,7 +128,7 @@ def enrich_one(
             required_tags=settings.required_tags,
         )
 
-        if interim.missing_required:
+        if interim.missing_required and _identity_changed(media, interim.fields):
             # Second catalog pass: if AcoustID/iTunes/Deezer found cleaner
             # title/artist data than the original file/filename, let high-trust
             # catalog providers verify and enrich from that better identity.
@@ -300,21 +310,42 @@ def enrich_library(
 ) -> RunSummary:
     settings.output_dir.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
-    client_map = build_provider_client_map(settings, store, RateLimiter(settings.rate_limits))
-    media_files = scan_library(settings, store, input_dir=input_dir, limit=limit)
+    report_path = report_csv or settings.report_csv
+    # Open first so the CSV header exists before a potentially long library scan.
+    # Existing rows are also the durable resume index when Docker uses tmpfs for
+    # the internal CSV store.
+    writer = StreamingReportWriter(
+        report_path,
+        append=settings.resume,
+        final_csv=final_csv,
+        write_jsonl=debug_output,
+        final_no_blanks=settings.final_no_blanks,
+        final_missing_value=settings.final_missing_value,
+    )
+    try:
+        client_map = build_provider_client_map(settings, store, RateLimiter(settings.rate_limits))
+        media_files = scan_library(settings, store, input_dir=input_dir, limit=limit)
+    except Exception:
+        writer.close()
+        raise
 
     # Filter resume-skips up front so we never even schedule already-done files.
     pending = [
         media
         for media in media_files
-        if not (settings.resume and store.should_skip(media.path, media.size_bytes, media.mtime))
+        if not (
+            settings.resume
+            and (
+                writer.has_path(media.path)
+                or store.should_skip(media.path, media.size_bytes, media.mtime)
+            )
+        )
     ]
     skipped = len(media_files) - len(pending)
     if skipped:
         LOGGER.info("resume: skipping %s already-processed files", skipped)
 
     workers = max(1, settings.worker_threads)
-    report_path = report_csv or settings.report_csv
     summary = RunSummary(
         report_path=str(report_path),
         total_files=len(media_files),
@@ -327,14 +358,6 @@ def enrich_library(
     latency_count: dict[str, int] = {}
     LOGGER.info("enriching %s files with %s worker(s)", len(pending), workers)
 
-    writer = StreamingReportWriter(
-        report_path,
-        append=settings.resume,
-        final_csv=final_csv,
-        write_jsonl=debug_output,
-        final_no_blanks=settings.final_no_blanks,
-        final_missing_value=settings.final_missing_value,
-    )
     executor = ThreadPoolExecutor(max_workers=workers)
     futures = {
         executor.submit(_safe_enrich_one, media, client_map, settings, paid_guard): media for media in pending

@@ -6,6 +6,7 @@ import json
 import re
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -327,6 +328,29 @@ class LocalAIAudioClient(ProviderClient):
         }
         return _sha256_payload(payload)
 
+    def _analyze(self, media: MediaFile) -> dict[str, Any]:
+        command = [sys.executable, "-m", "tag_creator.local_ai_runner", *self.runner_args(media)]
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=str(Path(__file__).resolve().parents[2]),
+                capture_output=True,
+                text=True,
+                timeout=self.settings.local_ai_timeout_seconds,
+                check=False,
+                env=thread_limited_env(self.settings),
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise TimeoutError("local AI analysis timed out") from exc
+
+        if completed.returncode != 0:
+            message = (completed.stderr or completed.stdout or "local AI runner failed").strip()
+            raise RuntimeError(message[:500])
+        try:
+            return json.loads(completed.stdout)
+        except ValueError as exc:
+            raise RuntimeError("local AI runner returned invalid JSON") from exc
+
     def enrich(self, media: MediaFile) -> ProviderResult | None:
         if not self.settings.local_ai_enabled:
             return None
@@ -344,28 +368,17 @@ class LocalAIAudioClient(ProviderClient):
             fields = self._raw_to_fields(cached)
             return ProviderResult(self.provider_name, 0.88 if fields else 0.35, fields, notes="cached local audio analysis", raw=cached)
 
-        command = [sys.executable, "-m", "tag_creator.local_ai_runner", *self.runner_args(media)]
         try:
-            completed = subprocess.run(
-                command,
-                cwd=str(Path(__file__).resolve().parents[2]),
-                capture_output=True,
-                text=True,
-                timeout=self.settings.local_ai_timeout_seconds,
-                check=False,
-                env=thread_limited_env(self.settings),
+            raw = self._analyze(media)
+        except (TimeoutError, RuntimeError) as exc:
+            return ProviderResult(self.provider_name, 0, {}, notes=str(exc))
+        except Exception as exc:  # noqa: BLE001 - isolate optional model failures per provider
+            return ProviderResult(
+                self.provider_name,
+                0,
+                {},
+                notes=f"local AI analysis failed: {type(exc).__name__}: {str(exc)[:400]}",
             )
-        except subprocess.TimeoutExpired:
-            return ProviderResult(self.provider_name, 0, {}, notes="local AI analysis timed out")
-
-        if completed.returncode != 0:
-            message = (completed.stderr or completed.stdout or "local AI runner failed").strip()
-            return ProviderResult(self.provider_name, 0, {}, notes=message[:500])
-
-        try:
-            raw = json.loads(completed.stdout)
-        except ValueError:
-            return ProviderResult(self.provider_name, 0, {}, notes="local AI runner returned invalid JSON")
         self.db.set_cache(self.provider_name, cache_key, 200, raw)
         fields = self._raw_to_fields(raw)
         return ProviderResult(
@@ -447,6 +460,10 @@ class ClapZeroShotClient(LocalAIAudioClient):
 
     provider_name = "clap_zero_shot"
 
+    def __init__(self, store, rate_limiter, settings: Settings) -> None:
+        super().__init__(store, rate_limiter, settings)
+        self._inference_slots = threading.BoundedSemaphore(settings.clap_concurrency)
+
     def model_paths(self) -> list[Path]:
         # Hugging Face files are managed in clap_cache_dir, not fixed .pb files.
         return []
@@ -472,8 +489,28 @@ class ClapZeroShotClient(LocalAIAudioClient):
             "label_specs": self.settings.clap_label_specs,
             "top_n": self.settings.local_ai_top_n,
             "min_score": self.settings.local_ai_min_score,
+            "max_seconds": self.settings.clap_max_seconds,
         }
         return _sha256_payload(payload)
+
+    def _analyze(self, media: MediaFile) -> dict[str, Any]:
+        # CLAP stays in this process so its model and text embeddings are loaded
+        # once and reused across the entire library. The semaphore bounds memory
+        # and CPU use while other file workers continue API/web stages.
+        from argparse import Namespace
+
+        from ..local_ai_runner import run_clap_zero_shot
+
+        args = Namespace(
+            audio=media.path,
+            model_name=self.settings.clap_model_name,
+            cache_dir=self.settings.clap_cache_dir,
+            label=self.settings.clap_label_specs,
+            top_n=self.settings.local_ai_top_n,
+            max_seconds=self.settings.clap_max_seconds,
+        )
+        with self._inference_slots:
+            return run_clap_zero_shot(args)
 
     def runner_args(self, media: MediaFile) -> list[str]:
         args = [

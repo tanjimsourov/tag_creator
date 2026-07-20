@@ -67,6 +67,7 @@ class WebDiscoveryClient(ProviderClient):
         super().__init__(store, rate_limiter)
         self.enabled = settings.web_scraping_enabled
         self.max_results = settings.web_max_results
+        self.max_queries_per_file = settings.web_max_queries_per_file
         self.allowed_domains = [domain.lower() for domain in settings.web_allowed_domains]
         self.search_endpoint = settings.web_search_endpoint
         self.max_fetches = settings.web_max_fetches_per_run  # 0 = unlimited
@@ -102,7 +103,7 @@ class WebDiscoveryClient(ProviderClient):
         parser: urllib.robotparser.RobotFileParser | None = None
         robots_url = f"{key}/robots.txt"
         try:
-            response = self.session.get(robots_url, timeout=(5, 10))
+            response = self.session.get(robots_url, timeout=(3, 5))
             if response.ok:
                 parser = urllib.robotparser.RobotFileParser()
                 parser.parse(response.text.splitlines())
@@ -133,7 +134,7 @@ class WebDiscoveryClient(ProviderClient):
         # results" and the pipeline simply relies on the other providers.
         self.rate_limiter.wait(self.provider_name)
         try:
-            response = self.session.get(self.search_endpoint, params={"q": query}, timeout=(10, 30))
+            response = self.session.get(self.search_endpoint, params={"q": query}, timeout=(5, 15))
         except Exception as exc:  # noqa: BLE001
             LOGGER.debug("web search failed: %s", exc)
             return []
@@ -160,7 +161,7 @@ class WebDiscoveryClient(ProviderClient):
         urls: list[str] = []
         seen: set[str] = set()
         per_query_limit = self.max_results
-        for query in queries:
+        for query in queries[: self.max_queries_per_file]:
             for url in self._search_urls(query):
                 key = url.split("#", 1)[0]
                 if key in seen:
@@ -401,34 +402,10 @@ class WebDiscoveryClient(ProviderClient):
                 continue
             queries.extend(
                 [
-                    f'"{track_query}" artist title album year genre',
-                    f'"{track_query}" release date album label catalog number',
-                    f'"{track_query}" isrc composer publisher copyright',
-                    f'"{track_query}" genre bpm key mood',
-                    f'"{track_query}" tempo key danceability energy',
-                    f'"{track_query}" musicstax bpm key energy danceability valence',
-                    f'"{track_query}" tunebat bpm key camelot popularity happiness energy',
-                    f'"{track_query}" songdata bpm key energy danceability valence',
-                    f'"{track_query}" chosic genre mood bpm key',
-                    f'"{track_query}" language instruments vocals',
-                    f'"{track_query}" "record label" "ISRC"',
-                    f'"{track_query}" "catalog number" Discogs MusicBrainz',
-                    f'"{track_query}" songwriter composer credits',
-                    f'site:musicbrainz.org "{track_query}" recording',
-                    f'site:discogs.com "{track_query}" release',
-                    f'site:last.fm "{track_query}"',
-                    f'site:deezer.com "{track_query}"',
-                    f'site:genius.com "{track_query}"',
-                    f'site:allmusic.com "{track_query}"',
-                    f'site:rateyourmusic.com "{track_query}"',
-                    f'site:officialcharts.com "{track_query}"',
-                    f'site:theaudiodb.com "{track_query}"',
-                    f'site:tunebat.com "{track_query}"',
-                    f'site:musicstax.com "{track_query}"',
-                    f'site:songbpm.com "{track_query}"',
-                    f'site:getsongbpm.com "{track_query}"',
-                    f'site:songdata.io "{track_query}"',
-                    f'site:chosic.com "{track_query}"',
+                    f'"{track_query}" title artist album release date genre label ISRC',
+                    f'"{track_query}" BPM key mood energy danceability valence',
+                    f'"{track_query}" language instruments vocals composer publisher copyright',
+                    f'"{track_query}" Discogs MusicBrainz AllMusic Musicstax Tunebat',
                 ]
             )
         urls = self._search_many_urls(queries)
@@ -442,7 +419,7 @@ class WebDiscoveryClient(ProviderClient):
                 break
             self.rate_limiter.wait(self.provider_name)
             try:
-                response = self.session.get(url, timeout=(10, 30))
+                response = self.session.get(url, timeout=(5, 15))
             except Exception as exc:  # noqa: BLE001
                 LOGGER.debug("web page fetch failed for %s: %s", url, exc)
                 continue

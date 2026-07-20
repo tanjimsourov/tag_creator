@@ -4,8 +4,13 @@ import argparse
 import json
 import os
 import sys
+import threading
 from pathlib import Path
 from typing import Any
+
+
+_CLAP_RESOURCE_CACHE: dict[tuple[str, str, tuple[str, ...]], dict[str, Any]] = {}
+_CLAP_RESOURCE_LOCK = threading.Lock()
 
 for _thread_var in (
     "OMP_NUM_THREADS",
@@ -250,6 +255,42 @@ def _clap_prompts(field: str, value: str) -> list[str]:
     ]
 
 
+def _clap_resources(model_name: str, cache_dir: Path, label_specs: list[str]) -> dict[str, Any]:
+    """Load CLAP and its invariant text tower once per process."""
+    key = (model_name, str(cache_dir.resolve()), tuple(label_specs))
+    with _CLAP_RESOURCE_LOCK:
+        cached = _CLAP_RESOURCE_CACHE.get(key)
+        if cached is not None:
+            return cached
+
+        import torch
+        from transformers import ClapModel, ClapProcessor
+
+        fields_values = [_split_label_spec(spec) for spec in label_specs]
+        prompt_specs: list[tuple[int, str, str, str]] = []
+        prompts: list[str] = []
+        for spec_index, (field, value) in enumerate(fields_values):
+            for prompt in _clap_prompts(field, value):
+                prompt_specs.append((spec_index, field, value, prompt))
+                prompts.append(prompt)
+
+        processor = ClapProcessor.from_pretrained(model_name, cache_dir=str(cache_dir))
+        model = ClapModel.from_pretrained(model_name, cache_dir=str(cache_dir))
+        model.eval()
+        text_inputs = processor(text=prompts, return_tensors="pt", padding=True)
+        with torch.inference_mode():
+            text_features = model.get_text_features(**text_inputs)
+            text_features = torch.nn.functional.normalize(text_features, dim=-1)
+        resource = {
+            "processor": processor,
+            "model": model,
+            "prompt_specs": prompt_specs,
+            "text_features": text_features,
+        }
+        _CLAP_RESOURCE_CACHE[key] = resource
+        return resource
+
+
 def run_clap_zero_shot(args: argparse.Namespace) -> dict[str, Any]:
     """Zero-shot audio tagging with LAION CLAP.
 
@@ -259,7 +300,6 @@ def run_clap_zero_shot(args: argparse.Namespace) -> dict[str, Any]:
     """
     import numpy as np
     import torch
-    from transformers import ClapModel, ClapProcessor
 
     audio = _load_audio(args.audio, rate=48000)
     # Very long files are expensive and unnecessary for descriptors. Analyze the
@@ -272,21 +312,20 @@ def run_clap_zero_shot(args: argparse.Namespace) -> dict[str, Any]:
     label_specs = [spec for spec in args.label if spec.strip()]
     if not label_specs:
         raise ValueError("at least one --label is required")
-    fields_values = [_split_label_spec(spec) for spec in label_specs]
-    prompt_specs: list[tuple[int, str, str, str]] = []
-    prompts: list[str] = []
-    for spec_index, (field, value) in enumerate(fields_values):
-        for prompt in _clap_prompts(field, value):
-            prompt_specs.append((spec_index, field, value, prompt))
-            prompts.append(prompt)
-
-    processor = ClapProcessor.from_pretrained(args.model_name, cache_dir=str(args.cache_dir))
-    model = ClapModel.from_pretrained(args.model_name, cache_dir=str(args.cache_dir))
-    model.eval()
-    inputs = processor(text=prompts, audios=audio, sampling_rate=48000, return_tensors="pt", padding=True)
-    with torch.no_grad():
-        outputs = model(**inputs)
-        scores = outputs.logits_per_audio.softmax(dim=-1).cpu().numpy()[0]
+    resources = _clap_resources(args.model_name, args.cache_dir, label_specs)
+    processor = resources["processor"]
+    model = resources["model"]
+    prompt_specs = resources["prompt_specs"]
+    text_features = resources["text_features"]
+    audio_inputs = processor(audios=audio, sampling_rate=48000, return_tensors="pt", padding=True)
+    with torch.inference_mode():
+        audio_features = model.get_audio_features(**audio_inputs)
+        audio_features = torch.nn.functional.normalize(audio_features, dim=-1)
+        logits = audio_features @ text_features.T
+        logit_scale = getattr(model, "logit_scale_a", None)
+        if logit_scale is not None:
+            logits = logits * logit_scale.exp().clamp(max=100)
+        scores = logits.softmax(dim=-1).cpu().numpy()[0]
 
     # Aggregate prompt variants back to the original label spec. Max keeps a
     # strong exact wording from being diluted by weaker variants.

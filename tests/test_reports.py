@@ -35,6 +35,19 @@ def test_writer_emits_csv_and_jsonl(tmp_path):
     assert jsonl[0]["merged"]["fields"]["title"] == "T"
 
 
+def test_writer_creates_header_immediately_and_flushes_each_row(tmp_path):
+    csv_path = tmp_path / "live.csv"
+    writer = StreamingReportWriter(csv_path, append=False, write_jsonl=False)
+    try:
+        assert csv_path.exists()
+        assert "file_path" in csv_path.read_text(encoding="utf-8-sig")
+        writer.write(_result("visible.mp3"))
+        rows = list(csv.DictReader(csv_path.open(encoding="utf-8-sig")))
+        assert [row["file_path"] for row in rows] == ["visible.mp3"]
+    finally:
+        writer.close()
+
+
 def test_resume_append_dedupes_and_keeps_single_header(tmp_path):
     csv_path = tmp_path / "r.csv"
     writer = StreamingReportWriter(csv_path, append=False)

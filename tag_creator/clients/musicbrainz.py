@@ -64,7 +64,9 @@ class MusicBrainzClient(ProviderClient):
         title = media.tags.get("title", "")
         artist = media.tags.get("artist", "")
         album = media.tags.get("album", "")
-        isrc = media.tags.get("isrc", "")
+        isrc = re.sub(r"[^A-Za-z0-9]", "", media.tags.get("isrc", "")).upper()
+        if isrc and not re.fullmatch(r"[A-Z]{2}[A-Z0-9]{3}\d{7}", isrc):
+            isrc = ""
         if not title and not isrc:
             return None
 
@@ -72,7 +74,10 @@ class MusicBrainzClient(ProviderClient):
         if isrc:
             data = self.get_json(
                 f"{self.base_url}/isrc/{quote(isrc)}",
-                params={"fmt": "json", "inc": "recordings+artists+releases+isrcs+genres+tags"},
+                # The ISRC resource already returns its recordings. `recordings`
+                # is not a valid `inc` value for this endpoint and caused one
+                # guaranteed HTTP 400 for every tagged file.
+                params={"fmt": "json"},
                 headers=self.headers,
                 cache_key_extra="isrc",
             )

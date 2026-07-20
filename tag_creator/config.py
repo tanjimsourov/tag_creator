@@ -138,6 +138,8 @@ class Settings:
     clap_model_name: str
     clap_cache_dir: Path
     clap_label_specs: list[str]
+    clap_concurrency: int
+    clap_max_seconds: int
     essentia_discogs_embedding_model: Path
     essentia_discogs_prediction_model: Path
     essentia_discogs_labels: Path
@@ -146,6 +148,7 @@ class Settings:
     essentia_extra_heads: list[str]
     web_scraping_enabled: bool
     web_max_results: int
+    web_max_queries_per_file: int
     web_allowed_domains: list[str]
     web_search_endpoint: str
     provider_weights: dict[str, float]
@@ -189,8 +192,14 @@ def _validate_settings(settings: Settings) -> None:
         problems.append("LOCAL_AI_TIMEOUT_SECONDS must be > 0")
     if settings.web_max_results < 1:
         problems.append("WEB_MAX_RESULTS must be >= 1")
+    if settings.web_max_queries_per_file < 1:
+        problems.append("WEB_MAX_QUERIES_PER_FILE must be >= 1")
     if settings.local_ai_top_n < 1:
         problems.append("LOCAL_AI_TOP_N must be >= 1")
+    if settings.clap_concurrency < 1:
+        problems.append("CLAP_CONCURRENCY must be >= 1")
+    if settings.clap_max_seconds < 1:
+        problems.append("CLAP_MAX_SECONDS must be >= 1")
     if settings.limit is not None and settings.limit < 0:
         problems.append("LIMIT must be >= 0 or blank")
     if settings.max_paid_calls is not None and settings.max_paid_calls < 0:
@@ -323,7 +332,7 @@ def load_settings() -> Settings:
         min_write_confidence=_float("MIN_WRITE_CONFIDENCE", 0.82),
         fill_unknown_values=_bool("FILL_UNKNOWN_VALUES", False),
         cpu_threads=max(1, _int("TAG_CREATOR_CPU_THREADS", 2)),
-        worker_threads=max(1, _int("WORKER_THREADS", min(8, max(1, os.cpu_count() or 2)))),
+        worker_threads=max(1, _int("WORKER_THREADS", min(6, max(1, (os.cpu_count() or 2) + 2)))),
         enabled_providers=_list("ENABLED_PROVIDERS", enabled_default),
         free_stage_providers=free_stage,
         web_stage_providers=web_stage,
@@ -344,6 +353,8 @@ def load_settings() -> Settings:
         local_ai_models_dir=resolve_path(os.environ.get("LOCAL_AI_MODELS_DIR", "models/local_ai")),
         clap_model_name=os.environ.get("CLAP_MODEL_NAME", "laion/clap-htsat-unfused").strip(),
         clap_cache_dir=resolve_path(os.environ.get("CLAP_CACHE_DIR", "models/local_ai/hf")),
+        clap_concurrency=max(1, _int("CLAP_CONCURRENCY", 2)),
+        clap_max_seconds=max(1, _int("CLAP_MAX_SECONDS", 30)),
         clap_label_specs=_list(
             "CLAP_LABEL_SPECS",
             [
@@ -471,7 +482,8 @@ def load_settings() -> Settings:
         musicnn_mtg_jamendo_labels=resolve_path(os.environ.get("MUSICNN_MTG_JAMENDO_LABELS", "models/local_ai/mtg_jamendo_labels.txt")),
         essentia_extra_heads=_list("ESSENTIA_EXTRA_HEADS", []),
         web_scraping_enabled=_bool("WEB_SCRAPING_ENABLED", True),
-        web_max_results=_int("WEB_MAX_RESULTS", 20),
+        web_max_results=_int("WEB_MAX_RESULTS", 5),
+        web_max_queries_per_file=_int("WEB_MAX_QUERIES_PER_FILE", 4),
         web_allowed_domains=_list(
             "WEB_ALLOWED_DOMAINS",
             [

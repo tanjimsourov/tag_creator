@@ -6,6 +6,9 @@ Set this in `.env`:
 
 ```text
 TAG_CREATOR_CPU_THREADS=2
+TAG_CREATOR_DOCKER_CPUS=4
+WORKER_THREADS=6
+CLAP_CONCURRENCY=2
 ```
 
 The tool applies this value to Python/NumPy/TensorFlow/Essentia thread environment variables:
@@ -20,7 +23,7 @@ The tool applies this value to Python/NumPy/TensorFlow/Essentia thread environme
 When running Docker, also set a Docker CPU quota:
 
 ```powershell
-docker run --cpus=2 --env-file .env tag_creator --input-dir media --dry-run
+docker run --cpus=4 --env-file .env tag_creator --input-dir media --dry-run
 ```
 
 ## Build Without Local AI
@@ -59,7 +62,7 @@ LOCAL_AI_MODELS_DIR=models/local_ai
 ## Run
 
 ```powershell
-docker run --rm --cpus=2 --env-file .env `
+docker run --rm --cpus=4 --env-file .env `
   -v ${PWD}/../ftp_downloads/mp3:/app/media:ro `
   -v ${PWD}/data:/app/data `
   -v ${PWD}/output:/app/output `
@@ -83,7 +86,7 @@ After download, normal enrichment runs mount the model folder as read-only.
 For cache-free test runs, use temporary in-memory data/log mounts:
 
 ```powershell
-docker run --rm --user root --cpus=2 --env-file .env `
+docker run --rm --user root --cpus=4 --env-file .env `
   --tmpfs /app/data --tmpfs /app/logs `
   -v ${PWD}/test_media:/app/test_media:ro `
   -v ${PWD}/output:/app/output `

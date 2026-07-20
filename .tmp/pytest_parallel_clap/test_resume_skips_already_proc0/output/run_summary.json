@@ -1,0 +1,15 @@
+{
+  "report_path": "C:\\Users\\spicy\\Documents\\projects\\smc\\ds-local hero\\tag_creator\\.tmp\\pytest_parallel_clap\\test_resume_skips_already_proc0\\output\\report.csv",
+  "total_files": 3,
+  "skipped": 3,
+  "written_rows": 0,
+  "interrupted": false,
+  "status_counts": {},
+  "provider_hits": {},
+  "provider_errors": {},
+  "provider_latency_ms": {},
+  "paid_calls": 0,
+  "web_fetches": 0,
+  "duration_seconds": 0.005,
+  "workers": 1
+}

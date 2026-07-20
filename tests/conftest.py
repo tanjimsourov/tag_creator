@@ -70,6 +70,8 @@ def _settings(tmp_path: Path, **overrides) -> Settings:
         clap_model_name="laion/clap-htsat-unfused",
         clap_cache_dir=tmp_path / "models" / "hf",
         clap_label_specs=[],
+        clap_concurrency=2,
+        clap_max_seconds=30,
         essentia_discogs_embedding_model=tmp_path / "models" / "emb.pb",
         essentia_discogs_prediction_model=tmp_path / "models" / "genre.pb",
         essentia_discogs_labels=tmp_path / "models" / "labels.txt",
@@ -78,6 +80,7 @@ def _settings(tmp_path: Path, **overrides) -> Settings:
         essentia_extra_heads=[],
         web_scraping_enabled=False,
         web_max_results=5,
+        web_max_queries_per_file=4,
         web_allowed_domains=[],
         web_search_endpoint="",
         provider_weights={},   # unknown providers default to 0.5 in the merge

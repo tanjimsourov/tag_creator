@@ -2,6 +2,7 @@
 paid-call cap. All offline — providers are fakes, no network."""
 from __future__ import annotations
 
+import csv
 import json
 from pathlib import Path
 
@@ -79,6 +80,52 @@ def test_resume_skips_already_processed_files(tmp_path, make_settings, mp3_facto
         store2.close()
     assert summary2.skipped == 3
     assert summary2.written_rows == 0
+
+
+def test_resume_uses_existing_csv_when_state_store_is_empty(
+    tmp_path, make_settings, mp3_factory, fake_provider_cls, monkeypatch
+):
+    media_dir = _seed_media_dir(mp3_factory, tmp_path, 3)
+    report = tmp_path / "output" / "library.csv"
+    first_settings = make_settings(input_dir=media_dir, data_dir=tmp_path / "state_one", resume=True)
+    first_provider = fake_provider_cls("free", {"title": "T", "artist": "A"})
+    monkeypatch.setattr(pipeline, "build_provider_client_map", lambda *a, **k: {"free": first_provider})
+
+    first_store = CsvStore(first_settings.data_dir)
+    try:
+        first = enrich_library(
+            first_settings,
+            first_store,
+            input_dir=media_dir,
+            report_csv=report,
+            limit=1,
+            final_csv=True,
+            debug_output=False,
+        )
+    finally:
+        first_store.close()
+    assert first.written_rows == 1
+
+    second_settings = make_settings(input_dir=media_dir, data_dir=tmp_path / "state_two", resume=True)
+    second_provider = fake_provider_cls("free", {"title": "T", "artist": "A"})
+    monkeypatch.setattr(pipeline, "build_provider_client_map", lambda *a, **k: {"free": second_provider})
+    second_store = CsvStore(second_settings.data_dir)
+    try:
+        second = enrich_library(
+            second_settings,
+            second_store,
+            input_dir=media_dir,
+            report_csv=report,
+            final_csv=True,
+            debug_output=False,
+        )
+    finally:
+        second_store.close()
+
+    assert second.skipped == 1
+    assert second.written_rows == 2
+    assert len(second_provider.calls) == 2
+    assert len(list(csv.DictReader(report.open(encoding="utf-8-sig")))) == 3
 
 
 def test_paid_guard_caps_paid_calls(tmp_path, make_settings, mp3_factory, fake_provider_cls, monkeypatch):

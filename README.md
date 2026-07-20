@@ -97,7 +97,14 @@ Set CPU usage in `.env`:
 
 ```text
 TAG_CREATOR_CPU_THREADS=2
+TAG_CREATOR_DOCKER_CPUS=4
+WORKER_THREADS=6
+CLAP_CONCURRENCY=2
 ```
+
+This keeps six files in flight. Two CLAP analyses run concurrently with two CPU
+threads each, fitting the four-CPU container limit while the other workers can
+continue network/catalog work. CLAP is loaded once and reused for the run.
 
 ### Simple Final CSV Workflow
 
@@ -116,43 +123,54 @@ OUTPUT_DIR=output
 LOCAL_AI_HOST_DIR=D:\editorBackend\tag_ai
 ```
 
-Then run. The output folder is cleaned and one final CSV is written using the input folder name, for example `output\mp3_or_mp4_folder.csv`.
+Then run. One final CSV is written using the input folder name, for example
+`output\mp3_or_mp4_folder.csv`. The header is created before scanning and each
+completed file is flushed immediately. A later run appends to this CSV and skips
+every file path already present.
 
 ```powershell
 $ROOT = (Get-Location).Path
 $INPUT_DIR = (Select-String -Path .env -Pattern '^INPUT_DIR=').Line.Split('=',2)[1].Trim()
 $INPUT_NAME = Split-Path -Leaf $INPUT_DIR
 
-docker run --rm --user root --cpus=2 --env-file .env `
+docker run --rm --user root --cpus=4 --env-file .env `
+  --env INPUT_DIR=/app/input_media --env OUTPUT_DIR=/app/output `
+  --env LOCAL_AI_MODELS_DIR=/app/models/local_ai `
   --tmpfs /app/data --tmpfs /app/logs `
   -v "${ROOT}\output:/app/output" `
   -v "${INPUT_DIR}:/app/input_media:ro" `
   -v "D:\editorBackend\tag_ai:/app/models/local_ai:ro" `
   tag_creator:local-ai --input-dir /app/input_media --report "/app/output/${INPUT_NAME}.csv" `
-  --final-csv --no-debug-output --dry-run --no-resume
+  --final-csv --no-debug-output --dry-run
 ```
 
 For a quick five-file test, add `--limit 5` at the end.
 
-If Python is installed on the server, the helper command does the same Docker run automatically and also cleans old CSV/JSON outputs:
+If Python is installed on the server, the helper command builds/runs Docker and
+uses the same streaming/resume behavior:
 
 ```powershell
 python main.py --build --limit 5
 python main.py
 ```
 
+Use `python main.py --fresh` only when the current input CSV must be replaced and
+all files intentionally processed again.
+
 ### Manual Docker
 
 ```powershell
 $ROOT = (Get-Location).Path
 docker build --build-arg INSTALL_LOCAL_AI=true -t tag_creator:local-ai .
-docker run --rm --user root --cpus=2 --env-file .env `
+docker run --rm --user root --cpus=4 --env-file .env `
+  --env INPUT_DIR=/app/input_media --env OUTPUT_DIR=/app/output `
+  --env LOCAL_AI_MODELS_DIR=/app/models/local_ai `
   --tmpfs /app/data --tmpfs /app/logs `
   -v "${ROOT}\output:/app/output" `
   -v "D:\path\to\mp3_or_mp4_folder:/app/input_media:ro" `
   -v "D:\editorBackend\tag_ai:/app/models/local_ai:ro" `
   tag_creator:local-ai --input-dir /app/input_media --report /app/output/final_tags.csv `
-  --final-csv --no-debug-output --dry-run --no-resume
+  --final-csv --no-debug-output --dry-run
 ```
 
 More notes: `docs/server_deployment.md`.

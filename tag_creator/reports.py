@@ -587,7 +587,10 @@ class StreamingReportWriter:
     it, and skips any file whose path is already present in the report.
     """
 
-    FLUSH_EVERY = 200
+    # A completed file must become visible to operators immediately. Python's
+    # flush is enough for a bind-mounted Docker output without the heavy cost of
+    # fsync on every row.
+    FLUSH_EVERY = 1
 
     def __init__(
         self,
@@ -622,7 +625,18 @@ class StreamingReportWriter:
         self._writer = csv.DictWriter(self._csv_file, fieldnames=self.fieldnames, extrasaction="ignore")
         if not resume:
             self._writer.writeheader()
+            self._csv_file.flush()
         self._jsonl_file = self.jsonl_path.open(jsonl_mode, encoding="utf-8") if write_jsonl else None
+
+    @property
+    def existing_paths(self) -> frozenset[str]:
+        """Paths already persisted in the CSV before this run started."""
+        with self._lock:
+            return frozenset(self._seen)
+
+    def has_path(self, path: Path) -> bool:
+        with self._lock:
+            return str(path) in self._seen
 
     @staticmethod
     def _existing_paths(csv_path: Path) -> set[str]:

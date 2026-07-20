@@ -61,6 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cpus", default=None, help="Docker CPU quota, for example 2")
     parser.add_argument("--keep-cache", action="store_true", help="persist data/log CSV cache instead of tmpfs")
     parser.add_argument("--keep-output-history", action="store_true", help="do not remove old output CSV/JSON files before this run")
+    parser.add_argument("--fresh", action="store_true", help="replace the current input folder CSV instead of resuming it")
     return parser
 
 
@@ -83,11 +84,13 @@ def main() -> int:
     final_name = f"{host_input.name}.csv"
     final_csv = output_dir / final_name
     final_name = final_csv.name
+    # Keep the active CSV so normal runs resume from its existing rows. Remove
+    # unrelated old artifacts unless history was explicitly requested.
     if not args.keep_output_history:
         for stale in output_dir.iterdir():
-            if stale.is_file() and stale.suffix.lower() in {".csv", ".json", ".jsonl"}:
+            if stale.is_file() and stale != final_csv and stale.suffix.lower() in {".csv", ".json", ".jsonl"}:
                 stale.unlink()
-    else:
+    if args.fresh:
         for stale in (final_csv, final_csv.with_suffix(".jsonl"), output_dir / "run_summary.json"):
             if stale.exists():
                 stale.unlink()
@@ -103,7 +106,7 @@ def main() -> int:
         if code != 0:
             return code
 
-    cpus = args.cpus or env.get("TAG_CREATOR_CPU_THREADS", "2")
+    cpus = args.cpus or env.get("TAG_CREATOR_DOCKER_CPUS", "4")
     command = [
         "docker",
         "run",
@@ -113,6 +116,12 @@ def main() -> int:
         f"--cpus={cpus}",
         "--env-file",
         ".env",
+        "--env",
+        "INPUT_DIR=/app/input_media",
+        "--env",
+        "OUTPUT_DIR=/app/output",
+        "--env",
+        "LOCAL_AI_MODELS_DIR=/app/models/local_ai",
     ]
     if not args.keep_cache:
         command.extend(["--tmpfs", "/app/data", "--tmpfs", "/app/logs"])
@@ -146,9 +155,10 @@ def main() -> int:
             "--final-csv",
             "--no-debug-output",
             "--dry-run",
-            "--no-resume",
         ]
     )
+    if args.fresh:
+        command.append("--no-resume")
     if args.limit is not None:
         command.extend(["--limit", str(args.limit)])
     if args.workers is not None:

@@ -1,0 +1,4 @@
+﻿path,size_bytes,mtime,extension,duration_seconds,bitrate,tags_json,has_cover_art,scanned_at
+C:\Users\spicy\Documents\projects\smc\ds-local hero\tag_creator\.tmp\pytest_parallel_clap\test_enrich_library_writes_rep0\lib\track_0.mp3,10008,1784538849.9632025,.mp3,,128000,{},no,1784538849.978848
+C:\Users\spicy\Documents\projects\smc\ds-local hero\tag_creator\.tmp\pytest_parallel_clap\test_enrich_library_writes_rep0\lib\track_1.mp3,10008,1784538849.9632025,.mp3,,128000,{},no,1784538849.9792993
+C:\Users\spicy\Documents\projects\smc\ds-local hero\tag_creator\.tmp\pytest_parallel_clap\test_enrich_library_writes_rep0\lib\track_2.mp3,10008,1784538849.9632025,.mp3,,128000,{},no,1784538849.979734

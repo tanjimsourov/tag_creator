@@ -1,0 +1,22 @@
+{
+  "report_path": "C:\\Users\\spicy\\Documents\\projects\\smc\\ds-local hero\\tag_creator\\.tmp\\pytest_parallel_clap\\test_paid_guard_caps_paid_call0\\output\\report.csv",
+  "total_files": 3,
+  "skipped": 0,
+  "written_rows": 3,
+  "interrupted": false,
+  "status_counts": {
+    "no_change": 2,
+    "dry_run_done": 1
+  },
+  "provider_hits": {
+    "paid": 1
+  },
+  "provider_errors": {},
+  "provider_latency_ms": {
+    "paid": 0.0
+  },
+  "paid_calls": 1,
+  "web_fetches": 0,
+  "duration_seconds": 0.006,
+  "workers": 1
+}

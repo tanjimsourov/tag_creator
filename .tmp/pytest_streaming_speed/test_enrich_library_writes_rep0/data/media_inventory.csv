@@ -1,0 +1,4 @@
+﻿path,size_bytes,mtime,extension,duration_seconds,bitrate,tags_json,has_cover_art,scanned_at
+C:\Users\spicy\Documents\projects\smc\ds-local hero\tag_creator\.tmp\pytest_streaming_speed\test_enrich_library_writes_rep0\lib\track_0.mp3,10008,1784537865.9196856,.mp3,,128000,{},no,1784537865.9417753
+C:\Users\spicy\Documents\projects\smc\ds-local hero\tag_creator\.tmp\pytest_streaming_speed\test_enrich_library_writes_rep0\lib\track_1.mp3,10008,1784537865.9196856,.mp3,,128000,{},no,1784537865.942373
+C:\Users\spicy\Documents\projects\smc\ds-local hero\tag_creator\.tmp\pytest_streaming_speed\test_enrich_library_writes_rep0\lib\track_2.mp3,10008,1784537865.9196856,.mp3,,128000,{},no,1784537865.9428751
