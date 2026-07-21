@@ -13,8 +13,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     NUMEXPR_NUM_THREADS=2 \
     TF_NUM_INTRAOP_THREADS=2 \
     TF_NUM_INTEROP_THREADS=2 \
-    HF_HOME=/app/models/local_ai/hf \
-    TRANSFORMERS_CACHE=/app/models/local_ai/hf
+    HF_HOME=/app/models/local_ai/hf
 
 WORKDIR /app
 

@@ -309,6 +309,29 @@ class LocalAIAudioClient(ProviderClient):
                 fields[key] = value
         return fields
 
+    @staticmethod
+    def _evidence_confidence(raw: dict[str, Any], fields: dict[str, str]) -> float:
+        substantive = {key: value for key, value in fields.items() if key not in {"analysis_summary", "analysis_json"} and value}
+        if not substantive:
+            return 0.35
+
+        confidence = 0.55
+        features = raw.get("features") or {}
+        if any(features.get(key) not in {None, ""} for key in ("bpm", "key", "danceability")):
+            # Deterministic DSP measurements are stronger evidence than a broad
+            # zero-shot label, while still remaining estimates from the audio.
+            confidence = 0.86
+
+        scores = [
+            max(0.0, min(1.0, float(tag.get("score") or 0)))
+            for tag in (raw.get("tags") or [])
+            if tag.get("label")
+        ]
+        if scores:
+            top = max(scores)
+            confidence = max(confidence, min(0.92, 0.55 + (top * 0.42)))
+        return round(confidence, 3)
+
     def is_configured(self) -> bool:
         if not self.settings.local_ai_enabled:
             return False
@@ -366,7 +389,8 @@ class LocalAIAudioClient(ProviderClient):
         cached = self.db.get_cache(self.provider_name, cache_key, self.cache_ttl_seconds)
         if cached is not None:
             fields = self._raw_to_fields(cached)
-            return ProviderResult(self.provider_name, 0.88 if fields else 0.35, fields, notes="cached local audio analysis", raw=cached)
+            confidence = self._evidence_confidence(cached, fields)
+            return ProviderResult(self.provider_name, confidence, fields, notes="cached local audio analysis", raw=cached)
 
         try:
             raw = self._analyze(media)
@@ -381,11 +405,12 @@ class LocalAIAudioClient(ProviderClient):
             )
         self.db.set_cache(self.provider_name, cache_key, 200, raw)
         fields = self._raw_to_fields(raw)
+        confidence = self._evidence_confidence(raw, fields)
         return ProviderResult(
             self.provider_name,
-            0.88 if fields else 0.35,
+            confidence,
             fields,
-            notes="local audio model analysis",
+            notes=f"local audio model analysis; evidence_confidence={confidence:.3f}",
             raw=raw,
         )
 

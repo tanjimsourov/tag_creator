@@ -6,6 +6,7 @@ import re
 import threading
 import time
 import urllib.robotparser
+from collections import defaultdict
 from html import unescape
 from urllib.parse import parse_qs, unquote, urlparse
 
@@ -51,6 +52,24 @@ FIELD_LABELS = {
     "isrc": ["isrc", "isrc code"],
     "instruments": ["instruments", "instrumentation"],
     "vocals": ["vocals", "vocal"],
+}
+
+CATALOG_FACT_FIELDS = {
+    "title", "artist", "album", "album_artist", "year", "date", "genre",
+    "subgenre", "language", "label", "catalog_number", "composer", "publisher",
+    "copyright", "isrc", "track_number", "disc_number",
+}
+AUDIO_ANALYSIS_FIELDS = {
+    "bpm", "key", "mood", "moods", "energy", "danceability", "valence",
+    "instruments", "vocals",
+}
+CATALOG_DOMAINS = {
+    "musicbrainz.org", "discogs.com", "allmusic.com", "theaudiodb.com",
+    "deezer.com", "last.fm", "genius.com", "wikidata.org", "wikipedia.org",
+}
+ANALYSIS_DOMAINS = {
+    "tunebat.com", "songbpm.com", "musicstax.com", "songdata.io",
+    "getsongbpm.com", "getsongkey.com", "chosic.com",
 }
 
 LABEL_TO_FIELD = {
@@ -171,6 +190,69 @@ class WebDiscoveryClient(ProviderClient):
                 if len(urls) >= per_query_limit:
                     return urls
         return urls
+
+    @staticmethod
+    def _domain(url: str) -> str:
+        host = urlparse(url).netloc.lower().split(":", 1)[0]
+        return host[4:] if host.startswith("www.") else host
+
+    @staticmethod
+    def _value_key(field: str, value: str) -> str:
+        text = unescape(value).strip().lower()
+        if field in {"isrc", "catalog_number"}:
+            return re.sub(r"[^a-z0-9]", "", text)
+        if field in {"bpm", "year", "track_number", "disc_number", "danceability", "valence"}:
+            return text
+        return re.sub(r"[^a-z0-9]+", " ", text).strip()
+
+    @staticmethod
+    def _field_domain_weight(field: str, domain: str) -> float:
+        if field in CATALOG_FACT_FIELDS:
+            return 1.0 if domain in CATALOG_DOMAINS else 0.55
+        if field in AUDIO_ANALYSIS_FIELDS:
+            return 1.0 if domain in ANALYSIS_DOMAINS else 0.65
+        return 0.70
+
+    @staticmethod
+    def _identity_match(fields: dict[str, str], candidates: list[tuple[str, str]]) -> tuple[bool, float]:
+        page_title = fields.get("title", "").strip()
+        page_artist = fields.get("artist", "").strip()
+        # A page that does not name both track and artist is not sufficient
+        # evidence for importing arbitrary table/body values.
+        if not page_title or not page_artist:
+            return False, 0.0
+        scores: list[float] = []
+        for artist, title in candidates:
+            plausible, title_score, artist_score = plausible_track_match(
+                title,
+                artist,
+                page_title,
+                page_artist,
+                min_title=0.62,
+                min_artist=0.55,
+            )
+            if plausible:
+                scores.append((title_score * 0.60) + (artist_score * 0.40))
+        return (bool(scores), max(scores) if scores else 0.0)
+
+    @staticmethod
+    def _queries(artist: str, title: str) -> list[str]:
+        identity = f'"{artist}" "{title}"' if artist else f'"{title}"'
+        return [
+            (
+                f"{identity} album release date label ISRC catalog number "
+                "(site:musicbrainz.org OR site:discogs.com OR site:theaudiodb.com)"
+            ),
+            (
+                f"{identity} composer publisher genre language "
+                "(site:allmusic.com OR site:genius.com OR site:last.fm)"
+            ),
+            (
+                f"{identity} BPM key danceability energy valence "
+                "(site:tunebat.com OR site:musicstax.com OR site:songbpm.com OR site:getsongkey.com)"
+            ),
+            f'{identity} "track" "artist" "album" "release date" "genre"',
+        ]
 
     @staticmethod
     def _extract_json_ld(soup: BeautifulSoup) -> list[dict]:
@@ -400,16 +482,9 @@ class WebDiscoveryClient(ProviderClient):
             track_query = " ".join(item for item in [artist, title] if item).strip()
             if not track_query:
                 continue
-            queries.extend(
-                [
-                    f'"{track_query}" title artist album release date genre label ISRC',
-                    f'"{track_query}" BPM key mood energy danceability valence',
-                    f'"{track_query}" language instruments vocals composer publisher copyright',
-                    f'"{track_query}" Discogs MusicBrainz AllMusic Musicstax Tunebat',
-                ]
-            )
+            queries.extend(self._queries(artist, title))
         urls = self._search_many_urls(queries)
-        combined: dict[str, str] = {}
+        evidence: dict[str, dict[str, dict[str, object]]] = defaultdict(dict)
         used_urls: list[str] = []
         for url in urls:
             if not self._robots_allowed(url):
@@ -426,25 +501,45 @@ class WebDiscoveryClient(ProviderClient):
             if not response.ok or "text/html" not in response.headers.get("content-type", ""):
                 continue
             fields = self._extract_fields(response.text, url)
-            if fields.get("title") or fields.get("artist"):
-                plausible = any(
-                    plausible_track_match(
-                        title,
-                        artist,
-                        fields.get("title", title),
-                        fields.get("artist", artist),
-                        min_title=0.45,
-                        min_artist=0.35,
-                    )[0]
-                    for artist, title in candidates
-                )
-                if not plausible:
-                    continue
+            plausible, identity_score = self._identity_match(fields, candidates)
+            if not plausible:
+                continue
             if fields:
-                combined.update({key: value for key, value in fields.items() if key not in combined})
                 used_urls.append(url)
+                domain = self._domain(url)
+                for field, value in fields.items():
+                    if not value or field in {"analysis_summary", "analysis_json"}:
+                        continue
+                    key = self._value_key(field, value)
+                    if not key:
+                        continue
+                    item = evidence[field].setdefault(
+                        key,
+                        {"value": value, "score": 0.0, "domains": set(), "urls": []},
+                    )
+                    domains = item["domains"]
+                    if domain not in domains:
+                        item["score"] = float(item["score"]) + (
+                            self._field_domain_weight(field, domain) * identity_score
+                        )
+                        domains.add(domain)
+                    item["urls"].append(url)
             if len(used_urls) >= 4:
                 break
+
+        combined: dict[str, str] = {}
+        field_evidence: dict[str, dict[str, object]] = {}
+        for field, candidates_by_value in evidence.items():
+            best = max(
+                candidates_by_value.values(),
+                key=lambda item: (float(item["score"]), len(item["domains"])),
+            )
+            combined[field] = str(best["value"])
+            field_evidence[field] = {
+                "score": round(float(best["score"]), 3),
+                "domains": sorted(best["domains"]),
+                "urls": list(dict.fromkeys(best["urls"])),
+            }
         if not combined:
             return ProviderResult("web_discovery", 0, {}, notes="no allowed web metadata found")
         return ProviderResult(
@@ -452,6 +547,6 @@ class WebDiscoveryClient(ProviderClient):
             0.62,
             combined,
             source_url=used_urls[0],
-            raw={"urls": used_urls},
-            notes="allowlisted public metadata extraction; no lyrics scraping",
+            raw={"urls": used_urls, "field_evidence": field_evidence},
+            notes="identity-verified allowlisted public metadata with field-level source consensus; no lyrics scraping",
         )

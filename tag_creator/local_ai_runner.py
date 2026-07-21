@@ -274,8 +274,19 @@ def _clap_resources(model_name: str, cache_dir: Path, label_specs: list[str]) ->
                 prompt_specs.append((spec_index, field, value, prompt))
                 prompts.append(prompt)
 
-        processor = ClapProcessor.from_pretrained(model_name, cache_dir=str(cache_dir))
-        model = ClapModel.from_pretrained(model_name, cache_dir=str(cache_dir))
+        # Production inference mounts the downloaded model directory read-only.
+        # Offline mode prevents Hugging Face from trying to write optional
+        # `.no_exist` cache markers into that mount.
+        processor = ClapProcessor.from_pretrained(
+            model_name,
+            cache_dir=str(cache_dir),
+            local_files_only=True,
+        )
+        model = ClapModel.from_pretrained(
+            model_name,
+            cache_dir=str(cache_dir),
+            local_files_only=True,
+        )
         model.eval()
         text_inputs = processor(text=prompts, return_tensors="pt", padding=True)
         with torch.inference_mode():
@@ -317,7 +328,7 @@ def run_clap_zero_shot(args: argparse.Namespace) -> dict[str, Any]:
     model = resources["model"]
     prompt_specs = resources["prompt_specs"]
     text_features = resources["text_features"]
-    audio_inputs = processor(audios=audio, sampling_rate=48000, return_tensors="pt", padding=True)
+    audio_inputs = processor(audio=audio, sampling_rate=48000, return_tensors="pt", padding=True)
     with torch.inference_mode():
         audio_features = model.get_audio_features(**audio_inputs)
         audio_features = torch.nn.functional.normalize(audio_features, dim=-1)
