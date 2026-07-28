@@ -6,9 +6,11 @@ import json
 import re
 import subprocess
 import sys
+import tempfile
 import threading
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from ..config import Settings
 from ..models import MediaFile, ProviderResult
@@ -100,6 +102,49 @@ _READABLE = {
     "pipeorgan": "pipe organ",
     "doublebass": "double bass",
 }
+
+_VIDEO_LIKE_EXTENSIONS = {".mp4", ".m4v", ".mov", ".avi", ".mkv", ".webm"}
+_LOCAL_AI_SEMAPHORES: dict[int, threading.BoundedSemaphore] = {}
+_LOCAL_AI_SEMAPHORES_LOCK = threading.Lock()
+
+
+def _local_ai_semaphore(concurrency: int) -> threading.BoundedSemaphore:
+    slots = max(1, concurrency)
+    with _LOCAL_AI_SEMAPHORES_LOCK:
+        semaphore = _LOCAL_AI_SEMAPHORES.get(slots)
+        if semaphore is None:
+            semaphore = threading.BoundedSemaphore(slots)
+            _LOCAL_AI_SEMAPHORES[slots] = semaphore
+        return semaphore
+
+
+def _representative_offsets(duration_seconds: int | None, total_seconds: int, segments: int) -> list[tuple[int, int]]:
+    """Return (start, duration) windows covering the audio without decoding all of it."""
+    total_seconds = max(1, total_seconds)
+    segments = max(1, segments)
+    if not duration_seconds or duration_seconds <= total_seconds or segments == 1:
+        return [(0, total_seconds)]
+
+    segment_duration = max(1, total_seconds // segments)
+    max_start = max(0, duration_seconds - segment_duration)
+    if segments == 2:
+        starts = [0, max_start]
+    else:
+        middle = max(0, int((duration_seconds - segment_duration) / 2))
+        starts = [0, middle, max_start]
+        if segments > 3:
+            step = max(1, max_start // (segments - 1))
+            starts = [min(max_start, index * step) for index in range(segments)]
+
+    windows: list[tuple[int, int]] = []
+    seen: set[int] = set()
+    for start in starts:
+        start = max(0, min(max_start, int(start)))
+        if start in seen:
+            continue
+        seen.add(start)
+        windows.append((start, segment_duration))
+    return windows or [(0, total_seconds)]
 
 
 def _pretty(label: str) -> str:
@@ -348,23 +393,132 @@ class LocalAIAudioClient(ProviderClient):
             "models": [str(path) for path in self.model_paths()],
             "top_n": self.settings.local_ai_top_n,
             "min_score": self.settings.local_ai_min_score,
+            "preview_seconds": self.settings.local_ai_audio_preview_seconds,
+            "preview_segments": self.settings.local_ai_audio_preview_segments,
         }
         return _sha256_payload(payload)
 
-    def _analyze(self, media: MediaFile) -> dict[str, Any]:
-        command = [sys.executable, "-m", "tag_creator.local_ai_runner", *self.runner_args(media)]
+    @contextmanager
+    def _analysis_audio_path(self, media: MediaFile) -> Iterator[Path]:
+        """Yield a bounded audio-only file for video containers.
+
+        MP4 files can be large, malformed, or contain video streams that make
+        downstream audio loaders slow. Local AI only needs representative audio,
+        so extract a deterministic preview window with ffmpeg and keep the
+        original media path for CSV identity/resume.
+        """
+        if media.extension.lower() not in _VIDEO_LIKE_EXTENSIONS:
+            yield media.path
+            return
+
+        with tempfile.TemporaryDirectory(prefix="tag_creator_audio_") as tmpdir:
+            preview = Path(tmpdir) / f"{media.path.stem}.wav"
+            windows = _representative_offsets(
+                media.duration_seconds,
+                self.settings.local_ai_audio_preview_seconds,
+                self.settings.local_ai_audio_preview_segments,
+            )
+            filter_parts: list[str] = []
+            concat_inputs: list[str] = []
+            for index, (start, duration) in enumerate(windows):
+                label = f"a{index}"
+                filter_parts.append(
+                    f"[0:a]atrim=start={start}:duration={duration},asetpts=PTS-STARTPTS[{label}]"
+                )
+                concat_inputs.append(f"[{label}]")
+            filter_complex = ";".join(filter_parts + [f"{''.join(concat_inputs)}concat=n={len(windows)}:v=0:a=1[outa]"])
+            command = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-y",
+                "-i",
+                str(media.path),
+                "-filter_complex",
+                filter_complex,
+                "-map",
+                "[outa]",
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "48000",
+                str(preview),
+            ]
+            completed = self._run_ffmpeg_preview(command)
+            if completed.returncode != 0 or not preview.exists() or preview.stat().st_size == 0:
+                # Some MP4 files have stream layouts that reject filter_complex.
+                # Fall back to a single bounded window so the file still gets real
+                # audio analysis instead of failing the whole local-AI stage.
+                fallback_start, fallback_duration = windows[len(windows) // 2]
+                fallback = [
+                    "ffmpeg",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-y",
+                    "-ss",
+                    str(fallback_start),
+                    "-i",
+                    str(media.path),
+                    "-t",
+                    str(fallback_duration),
+                    "-vn",
+                    "-ac",
+                    "1",
+                    "-ar",
+                    "48000",
+                    str(preview),
+                ]
+                completed = self._run_ffmpeg_preview(fallback)
+                if completed.returncode != 0 or not preview.exists() or preview.stat().st_size == 0:
+                    message = (completed.stderr or completed.stdout or "ffmpeg audio preview failed").strip()
+                    raise RuntimeError(message[:500])
+            yield preview
+
+    def _run_ffmpeg_preview(self, command: list[str]) -> subprocess.CompletedProcess[str]:
         try:
-            completed = subprocess.run(
+            return subprocess.run(
                 command,
-                cwd=str(Path(__file__).resolve().parents[2]),
                 capture_output=True,
                 text=True,
-                timeout=self.settings.local_ai_timeout_seconds,
+                timeout=self.settings.local_ai_audio_preview_timeout_seconds,
                 check=False,
                 env=thread_limited_env(self.settings),
             )
         except subprocess.TimeoutExpired as exc:
-            raise TimeoutError("local AI analysis timed out") from exc
+            raise TimeoutError(
+                f"ffmpeg audio preview timed out after "
+                f"{self.settings.local_ai_audio_preview_timeout_seconds}s"
+            ) from exc
+
+    def _analyze(self, media: MediaFile) -> dict[str, Any]:
+        with _local_ai_semaphore(self.settings.local_ai_concurrency):
+            with self._analysis_audio_path(media) as audio_path:
+                analysis_media = media if audio_path == media.path else MediaFile(
+                    path=audio_path,
+                    extension=audio_path.suffix.lower(),
+                    size_bytes=audio_path.stat().st_size,
+                    mtime=audio_path.stat().st_mtime,
+                    duration_seconds=media.duration_seconds,
+                    bitrate=media.bitrate,
+                    tags=media.tags,
+                    has_cover_art=media.has_cover_art,
+                )
+                command = [sys.executable, "-m", "tag_creator.local_ai_runner", *self.runner_args(analysis_media)]
+                try:
+                    completed = subprocess.run(
+                        command,
+                        cwd=str(Path(__file__).resolve().parents[2]),
+                        capture_output=True,
+                        text=True,
+                        timeout=self.settings.local_ai_timeout_seconds,
+                        check=False,
+                        env=thread_limited_env(self.settings),
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    raise TimeoutError("local AI analysis timed out") from exc
 
         if completed.returncode != 0:
             message = (completed.stderr or completed.stdout or "local AI runner failed").strip()
@@ -519,6 +673,9 @@ class ClapZeroShotClient(LocalAIAudioClient):
         return _sha256_payload(payload)
 
     def _analyze(self, media: MediaFile) -> dict[str, Any]:
+        if self.settings.clap_subprocess:
+            return super()._analyze(media)
+
         # CLAP stays in this process so its model and text embeddings are loaded
         # once and reused across the entire library. The semaphore bounds memory
         # and CPU use while other file workers continue API/web stages.

@@ -60,6 +60,8 @@ class CircuitBreaker:
 
 # One breaker shared by all clients for the process/run.
 BREAKER = CircuitBreaker(threshold=max(1, int(os.environ.get("CIRCUIT_BREAKER_THRESHOLD", "5") or "5")))
+HTTP_MAX_ATTEMPTS = max(1, int(os.environ.get("HTTP_MAX_ATTEMPTS", "3") or "3"))
+HTTP_RETRY_SLEEP_MAX = max(1.0, float(os.environ.get("HTTP_RETRY_SLEEP_MAX", "15") or "15"))
 
 
 class ProviderClient:
@@ -90,9 +92,9 @@ class ProviderClient:
     def _retry_delay(cls, response: requests.Response, attempt: int) -> float:
         retry_after = response.headers.get("Retry-After", "")
         if retry_after.isdigit():
-            base = min(float(retry_after), 60.0)
+            base = min(float(retry_after), HTTP_RETRY_SLEEP_MAX)
         else:
-            base = min(2.0**attempt, 30.0)
+            base = min(2.0**attempt, HTTP_RETRY_SLEEP_MAX)
         # Full jitter so many workers don't retry in lockstep.
         return base + random.uniform(0.0, min(base, 2.0))
 
@@ -121,18 +123,18 @@ class ProviderClient:
 
         timeout = (self.connect_timeout, self.read_timeout)
         response: requests.Response | None = None
-        for attempt in range(3):
+        for attempt in range(HTTP_MAX_ATTEMPTS):
             self.rate_limiter.wait(self.provider_name)
             try:
                 response = self.session.get(url, params=params, headers=headers, timeout=timeout)
             except requests.RequestException as exc:
                 LOGGER.warning("%s request failed: %s", self.provider_name, exc)
-                if attempt < 2:
-                    self._backoff_sleep(attempt)
+                if attempt < HTTP_MAX_ATTEMPTS - 1:
+                    self._backoff_sleep(attempt, ceiling=HTTP_RETRY_SLEEP_MAX)
                     continue
                 BREAKER.record_failure(self.provider_name)
                 return None
-            if response.status_code in _RETRY_STATUS and attempt < 2:
+            if response.status_code in _RETRY_STATUS and attempt < HTTP_MAX_ATTEMPTS - 1:
                 LOGGER.warning("%s returned %s; retrying", self.provider_name, response.status_code)
                 time.sleep(self._retry_delay(response, attempt))
                 continue
@@ -179,18 +181,18 @@ class ProviderClient:
 
         timeout = (self.connect_timeout, self.post_read_timeout)
         response: requests.Response | None = None
-        for attempt in range(3):
+        for attempt in range(HTTP_MAX_ATTEMPTS):
             self.rate_limiter.wait(self.provider_name)
             try:
                 response = self.session.post(url, json=payload, headers=headers, timeout=timeout)
             except requests.RequestException as exc:
                 LOGGER.warning("%s POST failed: %s", self.provider_name, exc)
-                if attempt < 2:
-                    self._backoff_sleep(attempt)
+                if attempt < HTTP_MAX_ATTEMPTS - 1:
+                    self._backoff_sleep(attempt, ceiling=HTTP_RETRY_SLEEP_MAX)
                     continue
                 BREAKER.record_failure(self.provider_name)
                 return None
-            if response.status_code in _RETRY_STATUS and attempt < 2:
+            if response.status_code in _RETRY_STATUS and attempt < HTTP_MAX_ATTEMPTS - 1:
                 LOGGER.warning("%s POST returned %s; retrying", self.provider_name, response.status_code)
                 time.sleep(self._retry_delay(response, attempt))
                 continue

@@ -134,12 +134,17 @@ class Settings:
     local_ai_top_n: int
     local_ai_min_score: float
     local_ai_timeout_seconds: int
+    local_ai_concurrency: int
+    local_ai_audio_preview_seconds: int
+    local_ai_audio_preview_segments: int
+    local_ai_audio_preview_timeout_seconds: int
     local_ai_models_dir: Path
     clap_model_name: str
     clap_cache_dir: Path
     clap_label_specs: list[str]
     clap_concurrency: int
     clap_max_seconds: int
+    clap_subprocess: bool
     essentia_discogs_embedding_model: Path
     essentia_discogs_prediction_model: Path
     essentia_discogs_labels: Path
@@ -190,6 +195,14 @@ def _validate_settings(settings: Settings) -> None:
         problems.append("TAG_CREATOR_CPU_THREADS must be >= 1")
     if settings.local_ai_timeout_seconds <= 0:
         problems.append("LOCAL_AI_TIMEOUT_SECONDS must be > 0")
+    if settings.local_ai_concurrency < 1:
+        problems.append("LOCAL_AI_CONCURRENCY must be >= 1")
+    if settings.local_ai_audio_preview_seconds < 1:
+        problems.append("LOCAL_AI_AUDIO_PREVIEW_SECONDS must be >= 1")
+    if settings.local_ai_audio_preview_segments < 1:
+        problems.append("LOCAL_AI_AUDIO_PREVIEW_SEGMENTS must be >= 1")
+    if settings.local_ai_audio_preview_timeout_seconds < 1:
+        problems.append("LOCAL_AI_AUDIO_PREVIEW_TIMEOUT_SECONDS must be >= 1")
     if settings.web_max_results < 1:
         problems.append("WEB_MAX_RESULTS must be >= 1")
     if settings.web_max_queries_per_file < 1:
@@ -350,11 +363,16 @@ def load_settings() -> Settings:
         local_ai_top_n=_int("LOCAL_AI_TOP_N", 12),
         local_ai_min_score=_float("LOCAL_AI_MIN_SCORE", 0.18),
         local_ai_timeout_seconds=max(30, _int("LOCAL_AI_TIMEOUT_SECONDS", 600)),
+        local_ai_concurrency=max(1, _int("LOCAL_AI_CONCURRENCY", 1)),
+        local_ai_audio_preview_seconds=max(1, _int("LOCAL_AI_AUDIO_PREVIEW_SECONDS", 45)),
+        local_ai_audio_preview_segments=max(1, _int("LOCAL_AI_AUDIO_PREVIEW_SEGMENTS", 3)),
+        local_ai_audio_preview_timeout_seconds=max(1, _int("LOCAL_AI_AUDIO_PREVIEW_TIMEOUT_SECONDS", 300)),
         local_ai_models_dir=resolve_path(os.environ.get("LOCAL_AI_MODELS_DIR", "models/local_ai")),
         clap_model_name=os.environ.get("CLAP_MODEL_NAME", "laion/clap-htsat-unfused").strip(),
         clap_cache_dir=resolve_path(os.environ.get("CLAP_CACHE_DIR", "models/local_ai/hf")),
         clap_concurrency=max(1, _int("CLAP_CONCURRENCY", 2)),
         clap_max_seconds=max(1, _int("CLAP_MAX_SECONDS", 30)),
+        clap_subprocess=_bool("CLAP_SUBPROCESS", True),
         clap_label_specs=_list(
             "CLAP_LABEL_SPECS",
             [
