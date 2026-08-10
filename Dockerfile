@@ -32,6 +32,7 @@ COPY pyproject.toml pyproject.toml
 COPY tag_creator tag_creator
 COPY scripts scripts
 COPY docs docs
+COPY change.py change.py
 COPY README.md README.md
 
 # Run as a non-root user and give it ownership of the writable volumes.
