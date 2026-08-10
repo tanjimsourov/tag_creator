@@ -220,7 +220,8 @@ To create copied CSV files in Talwinder's portal format, run:
 ```powershell
 docker run --rm --entrypoint python `
   -v "${ROOT}\output:/app/output" `
-  tag_creator:local-ai change.py --input /app/output --overwrite
+  -v "D:\path\to\mp3_or_mp4_folder:/app/input_media:ro" `
+  tag_creator:local-ai change.py --input /app/output --media-root /app/input_media --excel-time-text --overwrite
 ```
 
 The copied CSV keeps only these columns:
