@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import csv
+import json
 from pathlib import Path
 
-from change import MediaDurationResolver, OUTPUT_COLUMNS, upgrade_csv
+import pytest
+
+from change import MediaDurationResolver, OUTPUT_COLUMNS, clean_value, upgrade_csv
 
 
 def _write_source(path: Path, rows: list[dict[str, str]]) -> None:
@@ -115,3 +118,75 @@ def test_en_dash_filename_repairs_artist(tmp_path: Path, monkeypatch) -> None:
     result = _read_rows(output)
     assert result[0]["artist"] == "Sebastian Ingrosso"
     assert result[0]["title"] == "A New Day"
+
+
+def test_final_completion_vocal_and_missing_bpm_are_reanalyzed(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("GENRE_API_ENABLED", "false")
+    media = tmp_path / "Artist - Song.mp4"
+    media.write_bytes(b"media")
+    source = tmp_path / "input.csv"
+    output = tmp_path / "input_with_tag.csv"
+    _write_source(
+        source,
+        [
+            {
+                "title": "Song",
+                "artist": "Artist",
+                "album": "Single",
+                "genre": "Pop",
+                "subgenre": "Dance-pop",
+                "mood": "Upbeat",
+                "weather": "All Weather",
+                "season": "All Season",
+                "age_group": "Youth/Adult",
+                "filename": media.name,
+                "year": "2025",
+                "language": "English",
+                "label": "SMC",
+                "vocals": "vocal",
+                "bpm": "unknown bpm",
+                "duration_seconds": "180",
+                "sources": json.dumps({"vocals": "final_completion", "bpm": "final_completion"}),
+            }
+        ],
+    )
+
+    resolver = MediaDurationResolver([tmp_path])
+    monkeypatch.setattr(
+        resolver,
+        "_audio_facts",
+        lambda _path: {"bpm": "127", "vocal": "0", "instrumental": "1"},
+    )
+    upgrade_csv(source, output, resolver, strict_facts=True)
+
+    result = _read_rows(output)[0]
+    assert result["tempo"] == "127"
+    assert result["vocal"] == "0"
+    assert result["instrumental"] == "1"
+    assert result["isDL"] == "1"
+
+
+def test_strict_final_rejects_unmeasured_facts_without_replacing_output(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("GENRE_API_ENABLED", "false")
+    source = tmp_path / "input.csv"
+    output = tmp_path / "input_with_tag.csv"
+    _write_source(
+        source,
+        [
+            {
+                "title": "Song",
+                "artist": "Artist",
+                "genre": "Pop",
+                "filename": "missing.mp3",
+                "subgenre": "Dance-pop",
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="final CSV rejected"):
+        upgrade_csv(source, output, MediaDurationResolver([tmp_path]), strict_facts=True)
+    assert not output.exists()
+
+
+def test_common_utf8_mojibake_is_repaired() -> None:
+    assert clean_value("K\u00c3\u00a6rlighed") == "K\u00e6rlighed"

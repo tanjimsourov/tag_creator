@@ -218,10 +218,16 @@ Details: `docs/hybrid_pipeline.md`.
 To create copied CSV files in Talwinder's portal format, run:
 
 ```powershell
+$ROOT = (Get-Location).Path
+$INPUT_DIR = "D:\path\to\mp3_or_mp4_folder"
+$INPUT_NAME = Split-Path -Leaf $INPUT_DIR
+
 docker run --rm --entrypoint python `
+  --env-file .env `
   -v "${ROOT}\output:/app/output" `
-  -v "D:\path\to\mp3_or_mp4_folder:/app/input_media:ro" `
-  tag_creator:local-ai change.py --input /app/output --media-root /app/input_media --excel-time-text --overwrite
+  -v "${INPUT_DIR}:/app/input_media:ro" `
+  -v "D:\editorBackend\tag_ai:/app/models/local_ai:ro" `
+  tag_creator:local-ai change.py --input "/app/output/${INPUT_NAME}.csv" --media-root /app/input_media --excel-time-text --overwrite
 ```
 
 The copied CSV keeps only these columns:
@@ -238,3 +244,10 @@ subgenre,mood,moods,weather,season,age_group
 ```
 
 The original CSV files are not edited. New copied files use `_with_tag.csv`.
+When a media root is supplied, the converter treats the copy as a final import:
+duration and download state must resolve from the real file, BPM must be numeric,
+and vocal/instrumental must be supported by source evidence or focused local audio
+analysis. Title, artist, genre, year, language and tags must also be present without
+placeholder values. If any required fact remains unresolved, the copied CSV is
+rejected and the previous file is left untouched. Use `--allow-unresolved-facts`
+only for a non-final diagnostic copy.
