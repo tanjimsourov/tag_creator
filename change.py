@@ -7,6 +7,22 @@ from pathlib import Path
 
 
 SOURCE_COLUMNS = ("subgenre", "mood", "moods", "weather", "season", "age_group")
+OUTPUT_COLUMNS = (
+    "title",
+    "album",
+    "artist",
+    "time",
+    "genre",
+    "tempo",
+    "filename",
+    "year",
+    "language",
+    "isDL",
+    "label",
+    "vocal",
+    "instrumental",
+    "tag",
+)
 DEFAULT_INPUT_DIR = Path(os.getenv("OUTPUT_DIR", "output"))
 DEFAULT_SUFFIX = "_with_tag"
 
@@ -73,6 +89,86 @@ def build_tag(row: dict[str, str], header_map: dict[str, str]) -> str:
     return ",".join(tags)
 
 
+def row_value(row: dict[str, str], header_map: dict[str, str], *candidates: str) -> str:
+    for candidate in candidates:
+        actual_header = header_map.get(normalize_header(candidate))
+        if actual_header:
+            value = clean_value(row.get(actual_header, ""))
+            if value:
+                return value
+    return ""
+
+
+def format_time(value: str) -> str:
+    cleaned = clean_value(value)
+    if not cleaned:
+        return "00:00:00"
+
+    if ":" in cleaned:
+        parts = [part.strip() for part in cleaned.split(":") if part.strip()]
+        try:
+            numbers = [int(float(part)) for part in parts]
+        except ValueError:
+            return "00:00:00"
+        if len(numbers) == 3:
+            hours, minutes, seconds = numbers
+        elif len(numbers) == 2:
+            hours, minutes, seconds = 0, numbers[0], numbers[1]
+        elif len(numbers) == 1:
+            hours, minutes, seconds = 0, 0, numbers[0]
+        else:
+            return "00:00:00"
+    else:
+        try:
+            total_seconds = int(round(float(cleaned)))
+        except ValueError:
+            return "00:00:00"
+        hours, remainder = divmod(max(total_seconds, 0), 3600)
+        minutes, seconds = divmod(remainder, 60)
+
+    total_seconds = max(0, hours * 3600 + minutes * 60 + seconds)
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+
+
+def boolean_flag(value: str, *, truthy_words: tuple[str, ...], default: str = "0") -> str:
+    cleaned = clean_value(value).lower()
+    if not cleaned:
+        return default
+    if cleaned in {"1", "true", "yes", "y"}:
+        return "1"
+    if cleaned in {"0", "false", "no", "n"}:
+        return "0"
+    return "1" if any(word in cleaned for word in truthy_words) else "0"
+
+
+def build_output_row(row: dict[str, str], header_map: dict[str, str]) -> dict[str, str]:
+    vocals = row_value(row, header_map, "vocal", "vocals")
+    instruments = row_value(row, header_map, "instrumental", "instruments")
+    time_value = row_value(row, header_map, "time", "duration_seconds", "duration_s", "duration", "length")
+
+    return {
+        "title": row_value(row, header_map, "title"),
+        "album": row_value(row, header_map, "album"),
+        "artist": row_value(row, header_map, "artist"),
+        "time": format_time(time_value),
+        "genre": row_value(row, header_map, "genre"),
+        "tempo": row_value(row, header_map, "tempo", "bpm"),
+        "filename": row_value(row, header_map, "filename"),
+        "year": row_value(row, header_map, "year"),
+        "language": row_value(row, header_map, "language"),
+        "isDL": row_value(row, header_map, "isDL", "isdl") or "0",
+        "label": row_value(row, header_map, "label", "publisher"),
+        "vocal": boolean_flag(vocals, truthy_words=("vocal", "voice", "sing")),
+        "instrumental": boolean_flag(
+            " ".join((vocals, instruments)),
+            truthy_words=("instrumental", "no vocal", "non vocal"),
+        ),
+        "tag": build_tag(row, header_map),
+    }
+
+
 def output_path_for(input_path: Path, suffix: str) -> Path:
     return input_path.with_name(f"{input_path.stem}{suffix}{input_path.suffix}")
 
@@ -90,24 +186,19 @@ def upgrade_csv(input_path: Path, output_path: Path) -> tuple[int, int]:
         if not reader.fieldnames:
             raise ValueError(f"{input_path} has no CSV header")
 
-        fieldnames = list(reader.fieldnames)
-        normalized_headers = {normalize_header(header): header for header in fieldnames}
-        if "tag" not in normalized_headers:
-            fieldnames.append("tag")
-        tag_header = normalized_headers.get("tag", "tag")
+        normalized_headers = {normalize_header(header): header for header in reader.fieldnames}
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with output_path.open("w", newline="", encoding="utf-8-sig") as target_file:
-            writer = csv.DictWriter(target_file, fieldnames=fieldnames, extrasaction="ignore")
+            writer = csv.DictWriter(target_file, fieldnames=OUTPUT_COLUMNS, extrasaction="ignore")
             writer.writeheader()
             rows = 0
             tagged_rows = 0
             for row in reader:
-                tag_value = build_tag(row, normalized_headers)
-                row[tag_header] = tag_value
-                writer.writerow(row)
+                output_row = build_output_row(row, normalized_headers)
+                writer.writerow(output_row)
                 rows += 1
-                if tag_value:
+                if output_row["tag"]:
                     tagged_rows += 1
 
     return rows, tagged_rows
@@ -122,8 +213,8 @@ def find_csv_files(path: Path, suffix: str) -> list[Path]:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Create copied CSV files with a new tag column from "
-            "subgenre,mood,moods,weather,season,age_group."
+            "Create portal-ready copied CSV files with only the requested "
+            "columns and a tag column from subgenre,mood,moods,weather,season,age_group."
         )
     )
     parser.add_argument(

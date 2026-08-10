@@ -213,9 +213,9 @@ Details: `docs/hybrid_pipeline.md`.
 - `data/media_inventory.csv` - scanned file inventory.
 - `data/enrichment_state.csv` - per-file resume status.
 
-## Add Portal Tag Column To Existing Output CSVs
+## Create Portal-Ready CSV Copies
 
-To create copied CSV files with a new `tag` column, run:
+To create copied CSV files in Talwinder's portal format, run:
 
 ```powershell
 docker run --rm --entrypoint python `
@@ -223,7 +223,14 @@ docker run --rm --entrypoint python `
   tag_creator:local-ai change.py --input /app/output --overwrite
 ```
 
-The `tag` column is built from:
+The copied CSV keeps only these columns:
+
+```text
+title,album,artist,time,genre,tempo,filename,year,language,isDL,label,vocal,instrumental,tag
+```
+
+`time` is formatted as `hh:mm:ss`, for example `00:03:25`. The `tag`
+column is built from:
 
 ```text
 subgenre,mood,moods,weather,season,age_group
