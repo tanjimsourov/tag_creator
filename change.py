@@ -3,10 +3,13 @@ from __future__ import annotations
 import argparse
 import csv
 import os
+import re
 import subprocess
 from pathlib import Path
 
 from mutagen import File as MutagenFile
+
+from tag_creator.genre_catalog import normalize_genre_name
 
 
 SOURCE_COLUMNS = ("subgenre", "mood", "moods", "weather", "season", "age_group")
@@ -29,6 +32,10 @@ OUTPUT_COLUMNS = (
 DEFAULT_INPUT_DIR = Path(os.getenv("OUTPUT_DIR", "output"))
 DEFAULT_SUFFIX = "_with_tag"
 MEDIA_EXTENSIONS = {".mp3", ".mp4", ".m4a", ".aac", ".flac", ".wav", ".wma", ".ogg"}
+DEFAULT_ALBUM = "Single"
+DEFAULT_LABEL = "SMC"
+DEFAULT_LANGUAGE = "English"
+DEFAULT_TEMPO = "medium"
 
 PLACEHOLDER_VALUES = {
     "",
@@ -43,7 +50,9 @@ PLACEHOLDER_VALUES = {
     "unknown bpm",
     "unknown key",
     "needs_review",
+    "needs review",
     "not listed in free sources",
+    "not listed",
 }
 
 
@@ -53,6 +62,31 @@ def normalize_header(value: str) -> str:
 
 def clean_value(value: str) -> str:
     return " ".join(str(value or "").strip().split())
+
+
+def title_case_value(value: str) -> str:
+    cleaned = clean_value(value)
+    if not cleaned:
+        return ""
+    keep_upper = {"ai", "dj", "edm", "r&b", "uk", "us", "usa"}
+    words: list[str] = []
+    for word in cleaned.split():
+        lowered = word.lower()
+        words.append(lowered.upper() if lowered in keep_upper else word[:1].upper() + word[1:])
+    return " ".join(words)
+
+
+def canonical_value(value: str) -> str:
+    cleaned = clean_value(value).lower().replace("&", "and")
+    cleaned = re.sub(r"\bpopular music\b", "pop", cleaned)
+    cleaned = re.sub(r"[^a-z0-9/]+", " ", cleaned)
+    return " ".join(cleaned.split())
+
+
+def canonical_title(value: str) -> str:
+    cleaned = canonical_value(value)
+    cleaned = re.sub(r"\blyrics?\b", " ", cleaned)
+    return " ".join(cleaned.split())
 
 
 def split_tag_values(value: str) -> list[str]:
@@ -70,12 +104,145 @@ def split_tag_values(value: str) -> list[str]:
 
 def is_usable_tag(value: str) -> bool:
     lowered = clean_value(value).lower()
-    return lowered not in PLACEHOLDER_VALUES and not lowered.startswith("needs_review")
+    normalized = lowered.replace(" ", "_")
+    return lowered not in PLACEHOLDER_VALUES and not normalized.startswith("needs_review")
 
 
-def build_tag(row: dict[str, str], header_map: dict[str, str]) -> str:
+def is_missing_identity(value: str) -> bool:
+    cleaned = clean_value(value).lower()
+    normalized = cleaned.replace(" ", "_")
+    return (
+        not cleaned
+        or cleaned in PLACEHOLDER_VALUES
+        or cleaned.startswith("unknown")
+        or cleaned.startswith("not listed")
+        or normalized.startswith("needs_review")
+    )
+
+
+def basename_from_value(value: str) -> str:
+    cleaned = clean_value(value).replace("\\", "/")
+    return cleaned.rsplit("/", 1)[-1] if cleaned else ""
+
+
+def strip_media_extension(value: str) -> str:
+    name = basename_from_value(value)
+    suffix = Path(name).suffix
+    return clean_value(name[: -len(suffix)] if suffix else name)
+
+
+def standardize_lyrics_marker(value: str) -> str:
+    cleaned = clean_value(value)
+    if not cleaned:
+        return ""
+    has_lyrics = bool(re.search(r"[\[\(]\s*lyrics?\s*[\]\)]|\blyrics?\b", cleaned, flags=re.I))
+    cleaned = re.sub(r"[\[\(]\s*lyrics?\s*[\]\)]", " ", cleaned, flags=re.I)
+    cleaned = re.sub(r"\blyrics?\b", " ", cleaned, flags=re.I)
+    cleaned = clean_value(cleaned).strip(" -_")
+    return f"{cleaned} (Lyrics)" if has_lyrics and cleaned else cleaned
+
+
+def has_lyrics_marker(*values: str) -> bool:
+    return any(re.search(r"[\[\(]\s*lyrics?\s*[\]\)]|\blyrics?\b", value or "", flags=re.I) for value in values)
+
+
+def parse_artist_title_from_filename(filename: str) -> tuple[str, str]:
+    stem = strip_media_extension(filename)
+    if not stem:
+        return "", ""
+
+    # Accept the separators normally used by download tools without embedding
+    # locale-dependent dash characters in the source file.
+    for match in re.finditer(r"\s+(?:-|\u2013|\u2014)\s+", stem):
+        artist = stem[: match.start()]
+        title = stem[match.end() :]
+        if clean_value(artist) and clean_value(title):
+            return clean_value(artist), standardize_lyrics_marker(title)
+    return "", ""
+
+
+def filename_for_row(row: dict[str, str], header_map: dict[str, str]) -> str:
+    return row_value(row, header_map, "filename") or basename_from_value(row_value(row, header_map, "file_path", "path"))
+
+
+def fallback_from_filename(filename: str, field: str) -> str:
+    stem = standardize_lyrics_marker(strip_media_extension(filename))
+    artist, title = parse_artist_title_from_filename(filename)
+    if field == "artist":
+        return artist or stem or DEFAULT_LABEL
+    return title or stem or "Untitled"
+
+
+def resolve_single_genre(row: dict[str, str], header_map: dict[str, str]) -> str:
+    raw_genre = row_value(row, header_map, "genre")
+    candidates = split_tag_values(raw_genre)
+    primary = candidates[0] if candidates else raw_genre
+    normalized = normalize_genre_name(primary)
+    normalized_parts = split_tag_values(normalized)
+    return normalized_parts[0] if normalized_parts else title_case_value(primary or "Pop")
+
+
+def normalize_tag_value(value: str, source_column: str) -> str:
+    # Only genre-like values should be mapped against the portal genre API.
+    # Mood, weather, season and audience tags are separate taxonomies.
+    if source_column == "subgenre":
+        normalized = normalize_genre_name(value)
+        return normalized or title_case_value(value)
+    return title_case_value(value)
+
+
+def resolve_artist(row: dict[str, str], header_map: dict[str, str]) -> str:
+    artist = row_value(row, header_map, "artist")
+    filename = filename_for_row(row, header_map)
+    parsed_artist, parsed_title = parse_artist_title_from_filename(filename)
+    title = standardize_lyrics_marker(row_value(row, header_map, "title"))
+    if parsed_artist and (
+        is_missing_identity(artist)
+        or is_missing_identity(title)
+        or (parsed_title and title and canonical_title(parsed_title) == canonical_title(title))
+    ):
+        return parsed_artist
+    if not is_missing_identity(artist):
+        return artist
+    return fallback_from_filename(filename, "artist")
+
+
+def resolve_title(row: dict[str, str], header_map: dict[str, str]) -> str:
+    filename = filename_for_row(row, header_map)
+    title = standardize_lyrics_marker(row_value(row, header_map, "title"))
+    _, parsed_title = parse_artist_title_from_filename(filename)
+    if parsed_title and (
+        is_missing_identity(title)
+        or has_lyrics_marker(filename, parsed_title)
+        or canonical_value(parsed_title).replace(" lyrics", "") == canonical_value(title)
+    ):
+        return parsed_title
+    if not is_missing_identity(title):
+        return f"{title} (Lyrics)" if has_lyrics_marker(filename) and "(lyrics)" not in title.lower() else title
+    return fallback_from_filename(filename, "title")
+
+
+def build_tag(
+    row: dict[str, str],
+    header_map: dict[str, str],
+    *,
+    resolved_title: str = "",
+    resolved_artist: str = "",
+    resolved_genre: str = "",
+) -> str:
     tags: list[str] = []
     seen: set[str] = set()
+    genre_key = canonical_value(resolved_genre or row_value(row, header_map, "genre"))
+    identity_keys = {
+        canonical_value(value)
+        for value in (
+            resolved_title,
+            resolved_artist,
+            row_value(row, header_map, "album"),
+            row_value(row, header_map, "album_artist"),
+        )
+        if value and not is_missing_identity(value)
+    }
 
     for source_column in SOURCE_COLUMNS:
         actual_header = header_map.get(source_column)
@@ -84,11 +251,18 @@ def build_tag(row: dict[str, str], header_map: dict[str, str]) -> str:
         for value in split_tag_values(row.get(actual_header, "")):
             if not is_usable_tag(value):
                 continue
-            key = value.casefold()
+            final_value = normalize_tag_value(value, source_column)
+            key = canonical_value(final_value)
+            if not key or key == "general":
+                continue
+            if genre_key and key == genre_key:
+                continue
+            if key in identity_keys:
+                continue
             if key in seen:
                 continue
             seen.add(key)
-            tags.append(value)
+            tags.append(final_value)
 
     return ",".join(tags)
 
@@ -315,11 +489,96 @@ def boolean_flag(value: str, *, truthy_words: tuple[str, ...], default: str = "0
     cleaned = clean_value(value).lower()
     if not cleaned:
         return default
+    if cleaned in PLACEHOLDER_VALUES or cleaned.replace(" ", "_").startswith("needs_review"):
+        return default
     if cleaned in {"1", "true", "yes", "y"}:
         return "1"
     if cleaned in {"0", "false", "no", "n"}:
         return "0"
     return "1" if any(word in cleaned for word in truthy_words) else "0"
+
+
+def non_placeholder(value: str, fallback: str) -> str:
+    cleaned = clean_value(value)
+    return cleaned if cleaned and not is_missing_identity(cleaned) else fallback
+
+
+def song_key(title: str, artist: str) -> str:
+    return f"{canonical_value(artist)}::{canonical_title(title)}"
+
+
+def output_identity_key(output_row: dict[str, str]) -> tuple[str, str, str, tuple[str, ...]]:
+    """Return the portal fields that define an exact duplicate row."""
+
+    tag_keys = tuple(
+        sorted(
+            {
+                canonical_value(value)
+                for value in split_tag_values(output_row.get("tag", ""))
+                if canonical_value(value)
+            }
+        )
+    )
+    return (
+        canonical_value(output_row.get("title", "")),
+        canonical_value(output_row.get("artist", "")),
+        canonical_value(output_row.get("genre", "")),
+        tag_keys,
+    )
+
+
+def enforce_distinct_tags(output_row: dict[str, str]) -> None:
+    blocked = {
+        canonical_value(output_row.get("title", "")),
+        canonical_value(output_row.get("artist", "")),
+        canonical_value(output_row.get("genre", "")),
+    }
+    tags: list[str] = []
+    seen: set[str] = set()
+    for value in split_tag_values(output_row.get("tag", "")):
+        key = canonical_value(value)
+        if not key or key in blocked or key in seen:
+            continue
+        seen.add(key)
+        tags.append(value)
+    if not tags:
+        for fallback in ("retail background", "all weather", "all season"):
+            key = canonical_value(fallback)
+            if key not in blocked and key not in seen:
+                seen.add(key)
+                tags.append(fallback)
+    output_row["tag"] = ",".join(tags)
+
+
+def enforce_distinct_core_fields(output_row: dict[str, str]) -> None:
+    filename = output_row.get("filename", "")
+    parsed_artist, parsed_title = parse_artist_title_from_filename(filename)
+
+    title_key = canonical_title(output_row.get("title", ""))
+    artist_key = canonical_value(output_row.get("artist", ""))
+    genre_key = canonical_value(output_row.get("genre", ""))
+
+    if title_key and artist_key and title_key == artist_key:
+        if parsed_artist and canonical_value(parsed_artist) != title_key:
+            output_row["artist"] = parsed_artist
+        else:
+            output_row["artist"] = DEFAULT_LABEL
+
+    title_key = canonical_title(output_row.get("title", ""))
+    artist_key = canonical_value(output_row.get("artist", ""))
+    if parsed_title and title_key and canonical_title(parsed_title) == title_key and parsed_artist:
+        output_row["artist"] = parsed_artist
+
+    genre_key = canonical_value(output_row.get("genre", ""))
+    if genre_key and genre_key in {title_key, artist_key}:
+        output_row["genre"] = "Pop"
+
+
+def downloaded_flag(value: str) -> str:
+    cleaned = clean_value(value).lower()
+    if cleaned in {"1", "true", "yes", "y"}:
+        return "1"
+    return "0"
 
 
 def build_output_row(
@@ -329,6 +588,7 @@ def build_output_row(
     *,
     excel_time_text: bool = False,
     csv_context: str = "",
+    genre_by_song: dict[str, str] | None = None,
 ) -> dict[str, str]:
     vocals = row_value(row, header_map, "vocal", "vocals")
     instrumental = row_value(row, header_map, "instrumental")
@@ -336,26 +596,40 @@ def build_output_row(
     time_value = row_value(row, header_map, "time", "duration_seconds", "duration_s", "duration", "length")
     resolved_time = duration_resolver.resolve_time(row, header_map, time_value, csv_context)
     existing_isdl = row_value(row, header_map, "isDL", "isdl")
+    title = resolve_title(row, header_map)
+    artist = resolve_artist(row, header_map)
+    genre = resolve_single_genre(row, header_map)
+    key = song_key(title, artist)
+    if genre_by_song is not None and key != "::":
+        if key in genre_by_song:
+            genre = genre_by_song[key]
+        else:
+            genre_by_song[key] = genre
 
-    return {
-        "title": row_value(row, header_map, "title"),
-        "album": row_value(row, header_map, "album"),
-        "artist": row_value(row, header_map, "artist"),
+    output_row = {
+        "title": non_placeholder(title, fallback_from_filename(filename_for_row(row, header_map), "title")),
+        "album": non_placeholder(row_value(row, header_map, "album"), DEFAULT_ALBUM),
+        "artist": non_placeholder(artist, fallback_from_filename(filename_for_row(row, header_map), "artist")),
         "time": excel_text(resolved_time) if excel_time_text else resolved_time,
-        "genre": row_value(row, header_map, "genre"),
-        "tempo": row_value(row, header_map, "tempo", "bpm"),
-        "filename": row_value(row, header_map, "filename"),
-        "year": row_value(row, header_map, "year"),
-        "language": row_value(row, header_map, "language"),
+        "genre": non_placeholder(genre, "Pop"),
+        "tempo": non_placeholder(row_value(row, header_map, "tempo", "bpm"), DEFAULT_TEMPO),
+        "filename": non_placeholder(row_value(row, header_map, "filename"), basename_from_value(row_value(row, header_map, "file_path", "path"))),
+        "year": non_placeholder(row_value(row, header_map, "year"), "0"),
+        "language": non_placeholder(row_value(row, header_map, "language"), DEFAULT_LANGUAGE),
         "isDL": duration_resolver.is_downloaded(row, header_map, csv_context)
         if duration_resolver.has_media_roots()
-        else existing_isdl or "0",
-        "label": row_value(row, header_map, "label", "publisher"),
-        "vocal": vocals or boolean_flag(vocals, truthy_words=("vocal", "voice", "sing")),
-        "instrumental": instrumental
-        or boolean_flag(" ".join((vocals, instruments)), truthy_words=("instrumental", "no vocal", "non vocal")),
-        "tag": build_tag(row, header_map),
+        else downloaded_flag(existing_isdl),
+        "label": non_placeholder(row_value(row, header_map, "label", "publisher"), DEFAULT_LABEL),
+        "vocal": boolean_flag(vocals, truthy_words=("vocal", "voice", "sing"), default="1"),
+        "instrumental": boolean_flag(
+            instrumental or " ".join((vocals, instruments)),
+            truthy_words=("instrumental", "no vocal", "non vocal"),
+        ),
+        "tag": build_tag(row, header_map, resolved_title=title, resolved_artist=artist, resolved_genre=genre),
     }
+    enforce_distinct_core_fields(output_row)
+    enforce_distinct_tags(output_row)
+    return output_row
 
 
 def output_path_for(input_path: Path, suffix: str) -> Path:
@@ -383,25 +657,40 @@ def upgrade_csv(
 
         normalized_headers = {normalize_header(header): header for header in reader.fieldnames}
         csv_context = input_path.stem
+        genre_by_song: dict[str, str] = {}
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        with output_path.open("w", newline="", encoding="utf-8-sig") as target_file:
-            writer = csv.DictWriter(target_file, fieldnames=OUTPUT_COLUMNS, extrasaction="ignore")
-            writer.writeheader()
-            rows = 0
-            tagged_rows = 0
-            for row in reader:
-                output_row = build_output_row(
-                    row,
-                    normalized_headers,
-                    duration_resolver,
-                    excel_time_text=excel_time_text,
-                    csv_context=csv_context,
-                )
-                writer.writerow(output_row)
-                rows += 1
-                if output_row["tag"]:
-                    tagged_rows += 1
+        temporary_path = output_path.with_name(f".{output_path.name}.part")
+        seen_output_rows: set[tuple[str, str, str, tuple[str, ...]]] = set()
+        rows = 0
+        tagged_rows = 0
+        try:
+            with temporary_path.open("w", newline="", encoding="utf-8-sig") as target_file:
+                writer = csv.DictWriter(target_file, fieldnames=OUTPUT_COLUMNS, extrasaction="ignore")
+                writer.writeheader()
+                for row in reader:
+                    output_row = build_output_row(
+                        row,
+                        normalized_headers,
+                        duration_resolver,
+                        excel_time_text=excel_time_text,
+                        csv_context=csv_context,
+                        genre_by_song=genre_by_song,
+                    )
+                    identity = output_identity_key(output_row)
+                    if identity in seen_output_rows:
+                        continue
+                    seen_output_rows.add(identity)
+                    writer.writerow(output_row)
+                    rows += 1
+                    if output_row["tag"]:
+                        tagged_rows += 1
+                target_file.flush()
+                os.fsync(target_file.fileno())
+            temporary_path.replace(output_path)
+        finally:
+            if temporary_path.exists():
+                temporary_path.unlink()
 
     return rows, tagged_rows
 

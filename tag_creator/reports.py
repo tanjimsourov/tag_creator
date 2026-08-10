@@ -7,6 +7,7 @@ import re
 import threading
 from pathlib import Path
 
+from .genre_catalog import normalize_genre_name
 from .models import EnrichmentResult, MediaFile, RunSummary
 
 
@@ -214,6 +215,8 @@ def result_to_row(result: EnrichmentResult) -> dict[str, str]:
 
 def _derive_final_fields(fields: dict[str, str]) -> dict[str, str]:
     derived = dict(fields)
+    if derived.get("genre"):
+        derived["genre"] = normalize_genre_name(derived["genre"])
     title = derived.get("title", "").strip()
     artist = derived.get("artist", "").strip()
     album = derived.get("album", "").strip()
