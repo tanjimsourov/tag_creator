@@ -42,6 +42,14 @@ MEDIA_EXTENSIONS = {".mp3", ".mp4", ".m4a", ".aac", ".flac", ".wav", ".wma", ".o
 DEFAULT_ALBUM = "Single"
 DEFAULT_LABEL = "SMC"
 
+MOJIBAKE_MARKERS = (
+    "\u00c3",
+    "\u00c2",
+    "\u00e2\u20ac",
+    "\u00f0\u0178",
+    "\ufffd",
+)
+
 PLACEHOLDER_VALUES = {
     "",
     "-",
@@ -65,19 +73,37 @@ def normalize_header(value: str) -> str:
     return value.strip().lower().replace(" ", "_")
 
 
+def mojibake_score(value: str) -> int:
+    return sum(value.count(marker) for marker in MOJIBAKE_MARKERS)
+
+
+def contains_mojibake(value: str) -> bool:
+    return mojibake_score(clean_value(value)) > 0
+
+
 def clean_value(value: str) -> str:
-    cleaned = " ".join(str(value or "").strip().split())
-    markers = ("\u00c3", "\u00c2", "\u00e2", "\u00f0")
-    if any(marker in cleaned for marker in markers):
+    cleaned = unicodedata.normalize("NFC", " ".join(str(value or "").strip().split()))
+    # Repair repeated UTF-8/Windows-1252 decoding damage without touching
+    # correctly decoded Nordic or other Unicode text.
+    for _attempt in range(3):
+        current_score = mojibake_score(cleaned)
+        if current_score == 0:
+            break
+        best = cleaned
+        best_score = current_score
         for encoding in ("cp1252", "latin-1"):
             try:
                 repaired = cleaned.encode(encoding).decode("utf-8")
             except (UnicodeEncodeError, UnicodeDecodeError):
                 continue
-            if sum(repaired.count(marker) for marker in markers) < sum(cleaned.count(marker) for marker in markers):
-                cleaned = repaired
-                break
-    return cleaned
+            repaired_score = mojibake_score(repaired)
+            if repaired_score < best_score:
+                best = repaired
+                best_score = repaired_score
+        if best == cleaned:
+            break
+        cleaned = best
+    return unicodedata.normalize("NFC", cleaned)
 
 
 def normalized_filename_key(value: str) -> str:
@@ -191,11 +217,14 @@ def filename_for_row(row: dict[str, str], header_map: dict[str, str]) -> str:
 
 
 def fallback_from_filename(filename: str, field: str) -> str:
-    stem = standardize_lyrics_marker(strip_media_extension(filename))
     artist, title = parse_artist_title_from_filename(filename)
     if field == "artist":
-        return artist or stem or DEFAULT_LABEL
-    return title or stem or "Untitled"
+        return artist
+    return title
+
+
+def is_unverified_artist(value: str) -> bool:
+    return is_missing_identity(value) or canonical_value(value) in {"smc", "tag creator"}
 
 
 def resolve_single_genre(row: dict[str, str], header_map: dict[str, str]) -> str:
@@ -216,23 +245,42 @@ def normalize_tag_value(value: str, source_column: str) -> str:
     return title_case_value(value)
 
 
-def resolve_artist(row: dict[str, str], header_map: dict[str, str]) -> str:
+def resolve_artist(
+    row: dict[str, str],
+    header_map: dict[str, str],
+    duration_resolver: MediaDurationResolver | None = None,
+    csv_context: str = "",
+) -> str:
     artist = row_value(row, header_map, "artist")
     filename = filename_for_row(row, header_map)
     parsed_artist, parsed_title = parse_artist_title_from_filename(filename)
     title = standardize_lyrics_marker(row_value(row, header_map, "title"))
     if parsed_artist and (
-        is_missing_identity(artist)
+        is_unverified_artist(artist)
         or is_missing_identity(title)
         or (parsed_title and title and canonical_title(parsed_title) == canonical_title(title))
     ):
         return parsed_artist
-    if not is_missing_identity(artist):
+    if not is_unverified_artist(artist):
         return artist
-    return fallback_from_filename(filename, "artist")
+    if duration_resolver:
+        embedded_artist = duration_resolver.resolve_embedded_identity(
+            row,
+            header_map,
+            "artist",
+            csv_context,
+        )
+        if not is_unverified_artist(embedded_artist):
+            return embedded_artist
+    return ""
 
 
-def resolve_title(row: dict[str, str], header_map: dict[str, str]) -> str:
+def resolve_title(
+    row: dict[str, str],
+    header_map: dict[str, str],
+    duration_resolver: MediaDurationResolver | None = None,
+    csv_context: str = "",
+) -> str:
     filename = filename_for_row(row, header_map)
     title = standardize_lyrics_marker(row_value(row, header_map, "title"))
     _, parsed_title = parse_artist_title_from_filename(filename)
@@ -244,6 +292,15 @@ def resolve_title(row: dict[str, str], header_map: dict[str, str]) -> str:
         return parsed_title
     if not is_missing_identity(title):
         return f"{title} (Lyrics)" if has_lyrics_marker(filename) and "(lyrics)" not in title.lower() else title
+    if duration_resolver:
+        embedded_title = duration_resolver.resolve_embedded_identity(
+            row,
+            header_map,
+            "title",
+            csv_context,
+        )
+        if not is_missing_identity(embedded_title):
+            return standardize_lyrics_marker(embedded_title)
     return fallback_from_filename(filename, "title")
 
 
@@ -536,6 +593,7 @@ class MediaDurationResolver:
         self._relative_index: dict[str, Path] | None = None
         self._duration_cache: dict[Path, str] = {}
         self._audio_fact_cache: dict[Path, dict[str, str]] = {}
+        self._embedded_identity_cache: dict[Path, dict[str, str]] = {}
 
     def has_media_roots(self) -> bool:
         return bool(self.media_roots)
@@ -558,6 +616,44 @@ class MediaDurationResolver:
 
     def is_downloaded(self, row: dict[str, str], header_map: dict[str, str], csv_context: str = "") -> str:
         return "1" if self.resolve_media_path(row, header_map, csv_context) else "0"
+
+    def resolve_embedded_identity(
+        self,
+        row: dict[str, str],
+        header_map: dict[str, str],
+        field: str,
+        csv_context: str = "",
+    ) -> str:
+        media_path = self.resolve_media_path(row, header_map, csv_context)
+        if not media_path:
+            return ""
+        return self._embedded_identity_for_file(media_path).get(field, "")
+
+    def _embedded_identity_for_file(self, path: Path) -> dict[str, str]:
+        cached = self._embedded_identity_cache.get(path)
+        if cached is not None:
+            return cached
+
+        identity: dict[str, str] = {}
+        try:
+            media = MutagenFile(path, easy=True)
+            tags = getattr(media, "tags", None) or {}
+            for field, candidates in {
+                "artist": ("artist", "albumartist", "performer"),
+                "title": ("title",),
+            }.items():
+                for candidate in candidates:
+                    values = tags.get(candidate, []) if hasattr(tags, "get") else []
+                    if isinstance(values, str):
+                        values = [values]
+                    value = clean_value(values[0]) if values else ""
+                    if value and not is_missing_identity(value):
+                        identity[field] = value
+                        break
+        except Exception:
+            identity = {}
+        self._embedded_identity_cache[path] = identity
+        return identity
 
     def resolve_media_path(self, row: dict[str, str], header_map: dict[str, str], csv_context: str = "") -> Path | None:
         raw_file_path = row_value(row, header_map, "file_path", "path")
@@ -711,8 +807,8 @@ class MediaDurationResolver:
             facts = self._audio_facts(media_path)
             if facts.get("vocal") in {"0", "1"}:
                 return facts["vocal"], facts["instrumental"]
-            # Do not preserve a generic source fallback as an audio fact. In
-            # strict mode the unresolved pair will reject the output instead.
+            # Do not preserve a generic source fallback as an audio fact.
+            # Validation reports the unresolved pair while retaining the row.
             return "", ""
 
         # Verification can be disabled explicitly for legacy conversions that
@@ -742,6 +838,39 @@ class MediaDurationResolver:
         except ValueError:
             return ""
         return str(int(round(bpm))) if 30 <= bpm <= 300 else ""
+
+    @staticmethod
+    def _classify_vocal_tags(
+        ranked: list[dict[str, object]],
+        *,
+        voice_labels: set[str],
+        min_confidence: float,
+        min_margin: float,
+    ) -> dict[str, str]:
+        scores: dict[str, float] = {}
+        for item in ranked:
+            label = clean_value(str(item.get("label", ""))).casefold()
+            if label in voice_labels:
+                canonical_label = "voice"
+            elif label == "instrumental":
+                canonical_label = "instrumental"
+            else:
+                raise ValueError(f"unexpected voice/instrumental label: {label or '<blank>'}")
+            scores[canonical_label] = max(scores.get(canonical_label, 0.0), float(item.get("score", 0.0)))
+
+        if set(scores) != {"voice", "instrumental"}:
+            raise ValueError("voice/instrumental classifier did not return both expected classes")
+        ordered = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+        top_label, top_score = ordered[0]
+        second_score = ordered[1][1]
+        if top_score < min_confidence or (top_score - second_score) < min_margin:
+            raise ValueError(f"low voice/instrumental confidence: {top_score:.3f}/{second_score:.3f}")
+        is_instrumental = top_label == "instrumental"
+        return {
+            "vocal": "0" if is_instrumental else "1",
+            "instrumental": "1" if is_instrumental else "0",
+            "vocal_confidence": f"{top_score:.3f}",
+        }
 
     def _audio_facts(self, path: Path) -> dict[str, str]:
         cached = self._audio_fact_cache.get(path)
@@ -801,20 +930,16 @@ class MediaDurationResolver:
                         )
                     )
                     ranked = voice_result.get("tags", [])
-                    if len(ranked) < 2:
-                        raise ValueError("voice/instrumental model returned fewer than two classes")
-                    top_score = float(ranked[0].get("score", 0.0))
-                    second_score = float(ranked[1].get("score", 0.0))
                     min_confidence = float(os.getenv("VOCAL_MIN_CONFIDENCE", "0.60"))
                     min_margin = float(os.getenv("VOCAL_MIN_MARGIN", "0.10"))
-                    if top_score < min_confidence or (top_score - second_score) < min_margin:
-                        raise ValueError(
-                            f"low voice/instrumental confidence: {top_score:.3f}/{second_score:.3f}"
+                    facts.update(
+                        self._classify_vocal_tags(
+                            ranked,
+                            voice_labels={"voice"},
+                            min_confidence=min_confidence,
+                            min_margin=min_margin,
                         )
-                    is_instrumental = clean_value(str(ranked[0].get("label", ""))).lower() == "instrumental"
-                    facts["vocal"] = "0" if is_instrumental else "1"
-                    facts["instrumental"] = "1" if is_instrumental else "0"
-                    facts["vocal_confidence"] = f"{top_score:.3f}"
+                    )
                     facts["vocal_source"] = "essentia_voice_instrumental"
                 except Exception as exc:  # noqa: BLE001 - CLAP remains a measured fallback
                     errors.append(f"dedicated vocals {type(exc).__name__}: {exc}")
@@ -832,19 +957,15 @@ class MediaDurationResolver:
                         )
                         )
                         ranked = [tag for tag in clap_result.get("tags", []) if tag.get("field") == "vocals"]
-                        if len(ranked) < 2:
-                            raise ValueError("CLAP returned fewer than two vocal classes")
-                        top_score = float(ranked[0].get("score", 0.0))
-                        second_score = float(ranked[1].get("score", 0.0))
                         min_margin = float(os.getenv("CLAP_VOCAL_MIN_MARGIN", "0.02"))
-                        if (top_score - second_score) < min_margin:
-                            raise ValueError(
-                                f"low CLAP vocal confidence: {top_score:.3f}/{second_score:.3f}"
+                        facts.update(
+                            self._classify_vocal_tags(
+                                ranked,
+                                voice_labels={"vocal"},
+                                min_confidence=0.0,
+                                min_margin=min_margin,
                             )
-                        is_instrumental = clean_value(str(ranked[0].get("label", ""))).lower() == "instrumental"
-                        facts["vocal"] = "0" if is_instrumental else "1"
-                        facts["instrumental"] = "1" if is_instrumental else "0"
-                        facts["vocal_confidence"] = f"{top_score:.3f}"
+                        )
                         facts["vocal_source"] = "clap_zero_shot"
                     except Exception as exc:  # noqa: BLE001 - preserve independently measured BPM
                         errors.append(f"CLAP vocals {type(exc).__name__}: {exc}")
@@ -858,20 +979,51 @@ class MediaDurationResolver:
         self._audio_fact_cache[path] = facts
         return facts
 
+    @staticmethod
+    def _analysis_segments(total_seconds: int) -> list[tuple[int, int]]:
+        if total_seconds <= 0:
+            return [(0, 45)]
+        if total_seconds <= 90:
+            return [(0, total_seconds)]
+
+        segment_seconds = 15
+        half_segment = segment_seconds // 2
+        centers = (0.15, 0.50, 0.85)
+        return [
+            (
+                max(0, min(total_seconds - segment_seconds, int(total_seconds * center) - half_segment)),
+                segment_seconds,
+            )
+            for center in centers
+        ]
+
     def _analysis_preview(self, path: Path) -> tuple[Path, Path | None]:
         duration = self._duration_for_file(path)
         total_seconds = time_to_seconds(duration)
-        preview_seconds = min(60, max(30, total_seconds)) if total_seconds else 45
-        start = max(0, (total_seconds - preview_seconds) // 2) if total_seconds else 0
+        segments = self._analysis_segments(total_seconds)
         handle = tempfile.NamedTemporaryFile(prefix="tag_creator_final_", suffix=".wav", delete=False)
         preview_path = Path(handle.name)
         handle.close()
+        inputs: list[str] = []
+        filters: list[str] = []
+        for index, (start, segment_seconds) in enumerate(segments):
+            inputs.extend(["-ss", str(start), "-t", str(segment_seconds), "-i", str(path)])
+            filters.append(
+                f"[{index}:a]aformat=sample_rates=16000:channel_layouts=mono,"
+                f"asetpts=PTS-STARTPTS[a{index}]"
+            )
+        if len(segments) == 1:
+            filter_graph = f"{filters[0]};[a0]anull[out]"
+        else:
+            joined = "".join(f"[a{index}]" for index in range(len(segments)))
+            filter_graph = ";".join(filters) + f";{joined}concat=n={len(segments)}:v=0:a=1[out]"
         try:
             completed = subprocess.run(
                 [
                     "ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                    "-ss", str(start), "-i", str(path), "-t", str(preview_seconds),
-                    "-vn", "-ac", "1", "-ar", "48000", str(preview_path),
+                    *inputs,
+                    "-filter_complex", filter_graph,
+                    "-map", "[out]", "-vn", "-ac", "1", "-ar", "16000", str(preview_path),
                 ],
                 capture_output=True,
                 text=True,
@@ -988,7 +1140,7 @@ def enforce_distinct_core_fields(output_row: dict[str, str]) -> None:
         if parsed_artist and canonical_value(parsed_artist) != title_key:
             output_row["artist"] = parsed_artist
         else:
-            output_row["artist"] = DEFAULT_LABEL
+            output_row["artist"] = ""
 
     title_key = canonical_title(output_row.get("title", ""))
     artist_key = canonical_value(output_row.get("artist", ""))
@@ -1035,8 +1187,8 @@ def build_output_row(
         csv_context,
     )
     existing_isdl = row_value(row, header_map, "isDL", "isdl")
-    title = resolve_title(row, header_map)
-    artist = resolve_artist(row, header_map)
+    title = resolve_title(row, header_map, duration_resolver, csv_context)
+    artist = resolve_artist(row, header_map, duration_resolver, csv_context)
     genre = resolve_single_genre(row, header_map)
     album = non_placeholder(row_value(row, header_map, "album"), DEFAULT_ALBUM)
     existing_language = row_value(row, header_map, "language")
@@ -1087,10 +1239,29 @@ def output_path_for(input_path: Path, suffix: str) -> Path:
 
 def factual_issues(output_row: dict[str, str]) -> list[str]:
     issues: list[str] = []
-    for field in ("title", "artist", "genre", "year", "language", "tag"):
+    for field in ("title", "album", "artist", "genre", "filename", "year", "language", "label", "tag"):
         value = output_row.get(field, "")
         if not value or is_missing_identity(value):
             issues.append(f"{field} not verified")
+    if is_unverified_artist(output_row.get("artist", "")):
+        issues.append("artist not verified")
+    for field in ("title", "album", "artist", "filename", "label"):
+        if contains_mojibake(output_row.get(field, "")):
+            issues.append(f"{field} contains unresolved encoding damage")
+
+    title_key = canonical_title(output_row.get("title", ""))
+    artist_key = canonical_value(output_row.get("artist", ""))
+    genre_key = canonical_value(output_row.get("genre", ""))
+    if title_key and artist_key and title_key == artist_key:
+        issues.append("title and artist are not distinct")
+    if genre_key and genre_key in {title_key, artist_key}:
+        issues.append("genre conflicts with track identity")
+
+    tag_keys = [canonical_value(value) for value in split_tag_values(output_row.get("tag", ""))]
+    if len(tag_keys) != len(set(tag_keys)):
+        issues.append("tags contain duplicates")
+    if any(key in {title_key, artist_key, genre_key} for key in tag_keys):
+        issues.append("tags duplicate a core identity field")
     year = output_row.get("year", "")
     if year and (not year.isdigit() or not 1900 <= int(year) <= 2100):
         issues.append("year is invalid")
@@ -1135,66 +1306,67 @@ def upgrade_csv(
         genre_by_song: dict[str, str] = {}
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_path = output_path.with_name(f".{output_path.name}.part")
         seen_output_rows: set[tuple[str, str, str, tuple[str, ...]]] = set()
         rows = 0
         tagged_rows = 0
         unresolved: list[str] = []
-        try:
-            with temporary_path.open("w", newline="", encoding="utf-8-sig") as target_file:
-                writer = csv.DictWriter(target_file, fieldnames=OUTPUT_COLUMNS, extrasaction="ignore")
-                writer.writeheader()
-                with tqdm(
-                    source_rows,
-                    total=len(source_rows),
-                    desc=f"Converting {input_path.name}",
-                    unit="row",
-                    dynamic_ncols=True,
-                    mininterval=0.5,
-                    disable=not show_progress,
-                ) as progress:
-                    for row in progress:
-                        current_name = filename_for_row(row, normalized_headers) or row_value(
-                            row, normalized_headers, "title"
+        fsync_every_rows = max(1, int(os.getenv("CSV_FSYNC_EVERY_ROWS", "25")))
+        print(f"streaming output: {output_path}")
+        with output_path.open("w", newline="", encoding="utf-8-sig") as target_file:
+            writer = csv.DictWriter(target_file, fieldnames=OUTPUT_COLUMNS, extrasaction="ignore")
+            writer.writeheader()
+            target_file.flush()
+            os.fsync(target_file.fileno())
+            with tqdm(
+                source_rows,
+                total=len(source_rows),
+                desc=f"Converting {input_path.name}",
+                unit="row",
+                dynamic_ncols=True,
+                mininterval=0.5,
+                disable=not show_progress,
+            ) as progress:
+                for row in progress:
+                    current_name = filename_for_row(row, normalized_headers) or row_value(
+                        row, normalized_headers, "title"
+                    )
+                    if current_name:
+                        progress.set_postfix_str(clean_value(current_name)[:45], refresh=False)
+                    output_row = build_output_row(
+                        row,
+                        normalized_headers,
+                        duration_resolver,
+                        language_resolver,
+                        excel_time_text=excel_time_text,
+                        csv_context=csv_context,
+                        genre_by_song=genre_by_song,
+                    )
+                    identity = output_identity_key(output_row)
+                    if identity in seen_output_rows:
+                        continue
+                    seen_output_rows.add(identity)
+                    issues = factual_issues(output_row) if strict_facts else []
+                    if issues:
+                        unresolved.append(
+                            f"{output_row.get('filename') or output_row.get('title')}: {', '.join(issues)}"
                         )
-                        if current_name:
-                            progress.set_postfix_str(clean_value(current_name)[:45], refresh=False)
-                        output_row = build_output_row(
-                            row,
-                            normalized_headers,
-                            duration_resolver,
-                            language_resolver,
-                            excel_time_text=excel_time_text,
-                            csv_context=csv_context,
-                            genre_by_song=genre_by_song,
-                        )
-                        identity = output_identity_key(output_row)
-                        if identity in seen_output_rows:
-                            continue
-                        seen_output_rows.add(identity)
-                        issues = factual_issues(output_row) if strict_facts else []
-                        if issues:
-                            unresolved.append(
-                                f"{output_row.get('filename') or output_row.get('title')}: {', '.join(issues)}"
-                            )
-                        writer.writerow(output_row)
-                        rows += 1
-                        if output_row["tag"]:
-                            tagged_rows += 1
-                target_file.flush()
-                os.fsync(target_file.fileno())
-            if unresolved:
-                preview = "\n".join(f"  - {item}" for item in unresolved[:20])
-                remainder = len(unresolved) - min(20, len(unresolved))
-                suffix = f"\n  ... and {remainder} more" if remainder else ""
-                raise ValueError(
-                    f"final CSV rejected: {len(unresolved)} row(s) still contain unresolved measured facts:\n"
-                    f"{preview}{suffix}"
-                )
-            temporary_path.replace(output_path)
-        finally:
-            if temporary_path.exists():
-                temporary_path.unlink()
+                    writer.writerow(output_row)
+                    target_file.flush()
+                    rows += 1
+                    if rows % fsync_every_rows == 0:
+                        os.fsync(target_file.fileno())
+                    if output_row["tag"]:
+                        tagged_rows += 1
+            os.fsync(target_file.fileno())
+
+        if unresolved:
+            preview = "\n".join(f"  - {item}" for item in unresolved[:20])
+            remainder = len(unresolved) - min(20, len(unresolved))
+            suffix = f"\n  ... and {remainder} more" if remainder else ""
+            print(
+                f"validation warning: {len(unresolved)} row(s) contain unresolved measured facts; "
+                f"all unique rows were retained in {output_path}:\n{preview}{suffix}"
+            )
 
     return rows, tagged_rows
 
@@ -1241,7 +1413,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--allow-unresolved-facts",
         action="store_true",
-        help="Create the copy even when duration, BPM, download state, or vocal classification cannot be verified.",
+        help="Disable unresolved-fact warnings. Unique rows are always retained in the copied CSV.",
     )
     return parser.parse_args()
 

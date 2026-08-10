@@ -3,10 +3,20 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
-from change import MissingLanguageResolver, MediaDurationResolver, OUTPUT_COLUMNS, clean_value, upgrade_csv
+import change as change_module
+from change import (
+    MissingLanguageResolver,
+    MediaDurationResolver,
+    OUTPUT_COLUMNS,
+    clean_value,
+    factual_issues,
+    resolve_artist,
+    upgrade_csv,
+)
 
 
 def _write_source(path: Path, rows: list[dict[str, str]]) -> None:
@@ -252,7 +262,7 @@ def test_missing_vocal_and_bpm_use_local_ai(tmp_path: Path, monkeypatch) -> None
     assert result["instrumental"] == "1"
 
 
-def test_strict_final_rejects_unmeasured_facts_without_replacing_output(tmp_path: Path, monkeypatch) -> None:
+def test_strict_validation_warns_and_retains_unmeasured_rows(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("GENRE_API_ENABLED", "false")
     source = tmp_path / "input.csv"
     output = tmp_path / "input_with_tag.csv"
@@ -269,13 +279,175 @@ def test_strict_final_rejects_unmeasured_facts_without_replacing_output(tmp_path
         ],
     )
 
-    with pytest.raises(ValueError, match="final CSV rejected"):
-        upgrade_csv(source, output, MediaDurationResolver([tmp_path]), strict_facts=True)
-    assert not output.exists()
+    rows, tagged_rows = upgrade_csv(source, output, MediaDurationResolver([tmp_path]), strict_facts=True)
+
+    assert (rows, tagged_rows) == (1, 1)
+    assert _read_rows(output)[0]["filename"] == "missing.mp3"
+    assert "validation warning: 1 row(s)" in capsys.readouterr().out
+
+
+def test_streamed_output_keeps_completed_rows_after_later_failure(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("GENRE_API_ENABLED", "false")
+    source = tmp_path / "input.csv"
+    output = tmp_path / "input_with_tag.csv"
+    common = {
+        "artist": "Artist",
+        "album": "Single",
+        "genre": "Pop",
+        "subgenre": "Dance-pop",
+        "year": "2025",
+        "language": "English",
+        "label": "SMC",
+        "vocal": "1",
+        "instrumental": "0",
+        "duration_seconds": "180",
+        "bpm": "120",
+    }
+    _write_source(
+        source,
+        [
+            {**common, "title": "First Song", "filename": "Artist - First Song.mp3"},
+            {**common, "title": "Second Song", "filename": "Artist - Second Song.mp3"},
+        ],
+    )
+
+    original_build_output_row = change_module.build_output_row
+    calls = 0
+
+    def fail_on_second_row(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("later row failed")
+        return original_build_output_row(*args, **kwargs)
+
+    monkeypatch.setattr(change_module, "build_output_row", fail_on_second_row)
+    with pytest.raises(RuntimeError, match="later row failed"):
+        upgrade_csv(source, output, MediaDurationResolver([]))
+
+    retained_rows = _read_rows(output)
+    assert len(retained_rows) == 1
+    assert retained_rows[0]["title"] == "First Song"
 
 
 def test_common_utf8_mojibake_is_repaired() -> None:
     assert clean_value("K\u00c3\u00a6rlighed") == "K\u00e6rlighed"
+    assert clean_value("Sydp\u00c3\u00a5") == "Sydp\u00e5"
+
+
+def test_ambiguous_filename_does_not_invent_smc_artist() -> None:
+    row = {"artist": "unknown", "title": "unknown", "filename": "abc123.mp3"}
+    headers = {key: key for key in row}
+
+    assert resolve_artist(row, headers) == ""
+
+
+def test_missing_artist_uses_embedded_media_metadata(tmp_path: Path, monkeypatch) -> None:
+    media = tmp_path / "abc123.mp3"
+    media.write_bytes(b"media")
+    row = {"artist": "unknown", "title": "Song", "filename": media.name}
+    headers = {key: key for key in row}
+    resolver = MediaDurationResolver([tmp_path])
+    monkeypatch.setattr(
+        resolver,
+        "_embedded_identity_for_file",
+        lambda _path: {"artist": "Verified Artist", "title": "Song"},
+    )
+
+    assert resolve_artist(row, headers, resolver) == "Verified Artist"
+
+
+def test_multi_section_audio_sampling_covers_start_middle_and_end() -> None:
+    segments = MediaDurationResolver._analysis_segments(240)
+
+    assert segments == [(29, 15), (113, 15), (197, 15)]
+
+
+def test_audio_preview_concatenates_all_three_sections(tmp_path: Path, monkeypatch) -> None:
+    media = tmp_path / "Artist - Song.mp4"
+    media.write_bytes(b"media")
+    resolver = MediaDurationResolver([tmp_path])
+    monkeypatch.setattr(resolver, "_duration_for_file", lambda _path: "00:04:00")
+    commands: list[list[str]] = []
+
+    def fake_run(command: list[str], **_kwargs) -> SimpleNamespace:
+        commands.append(command)
+        Path(command[-1]).write_bytes(b"wav")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("change.subprocess.run", fake_run)
+    preview, temporary = resolver._analysis_preview(media)
+    try:
+        assert temporary == preview
+        assert commands[0].count("-i") == 3
+        assert "concat=n=3:v=0:a=1" in commands[0][commands[0].index("-filter_complex") + 1]
+    finally:
+        preview.unlink(missing_ok=True)
+
+
+def test_known_vocal_classifier_result_maps_to_complementary_flags() -> None:
+    result = MediaDurationResolver._classify_vocal_tags(
+        [{"label": "voice", "score": 0.91}, {"label": "instrumental", "score": 0.09}],
+        voice_labels={"voice"},
+        min_confidence=0.60,
+        min_margin=0.10,
+    )
+
+    assert result["vocal"] == "1"
+    assert result["instrumental"] == "0"
+
+
+def test_known_instrumental_classifier_result_maps_to_complementary_flags() -> None:
+    result = MediaDurationResolver._classify_vocal_tags(
+        [{"label": "instrumental", "score": 0.88}, {"label": "voice", "score": 0.12}],
+        voice_labels={"voice"},
+        min_confidence=0.60,
+        min_margin=0.10,
+    )
+
+    assert result["vocal"] == "0"
+    assert result["instrumental"] == "1"
+
+
+def test_vocal_classifier_rejects_low_confidence_or_unknown_labels() -> None:
+    with pytest.raises(ValueError, match="low voice/instrumental confidence"):
+        MediaDurationResolver._classify_vocal_tags(
+            [{"label": "voice", "score": 0.54}, {"label": "instrumental", "score": 0.46}],
+            voice_labels={"voice"},
+            min_confidence=0.60,
+            min_margin=0.10,
+        )
+
+    with pytest.raises(ValueError, match="unexpected voice/instrumental label"):
+        MediaDurationResolver._classify_vocal_tags(
+            [{"label": "speech", "score": 0.90}, {"label": "instrumental", "score": 0.10}],
+            voice_labels={"voice"},
+            min_confidence=0.60,
+            min_margin=0.10,
+        )
+
+
+def test_final_validation_reports_fake_artist_and_encoding_damage() -> None:
+    row = {
+        "title": "Broken \ufffd Title",
+        "album": "Single",
+        "artist": "SMC",
+        "time": "00:03:00",
+        "genre": "Pop",
+        "tempo": "120",
+        "filename": "abc123.mp3",
+        "year": "2025",
+        "language": "English",
+        "isDL": "1",
+        "label": "SMC",
+        "vocal": "1",
+        "instrumental": "0",
+        "tag": "Upbeat",
+    }
+
+    issues = factual_issues(row)
+    assert "artist not verified" in issues
+    assert "title contains unresolved encoding damage" in issues
 
 
 def test_missing_language_resolver_preserves_existing_value(monkeypatch) -> None:
