@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import os
 import re
 import subprocess
@@ -12,6 +11,7 @@ from argparse import Namespace
 from pathlib import Path
 
 from mutagen import File as MutagenFile
+from tqdm import tqdm
 
 from tag_creator.genre_catalog import normalize_genre_name
 
@@ -299,18 +299,6 @@ def row_value(row: dict[str, str], header_map: dict[str, str], *candidates: str)
     return ""
 
 
-def field_uses_final_completion(row: dict[str, str], header_map: dict[str, str], field: str) -> bool:
-    raw_sources = row_value(row, header_map, "sources")
-    if not raw_sources:
-        return False
-    try:
-        sources = json.loads(raw_sources)
-    except (TypeError, ValueError):
-        return False
-    source = clean_value(str(sources.get(field, ""))).lower()
-    return "final_completion" in source
-
-
 def format_time(value: str) -> str:
     cleaned = clean_value(value)
     if cleaned.startswith('="') and cleaned.endswith('"'):
@@ -533,8 +521,11 @@ class MediaDurationResolver:
         instrumental: str,
         csv_context: str = "",
     ) -> tuple[str, str]:
-        source_is_fallback = field_uses_final_completion(row, header_map, "vocals")
-        if not source_is_fallback and (clean_value(vocals) or clean_value(instrumental)):
+        # This converter must preserve a completed source CSV. Provenance such
+        # as ``final_completion`` is useful for auditing, but it does not make
+        # an explicit vocal/instrumental value missing. Only invoke the slower
+        # local model when the existing columns cannot provide a valid pair.
+        if clean_value(vocals) or clean_value(instrumental):
             instrumental_flag = boolean_flag(
                 instrumental or vocals,
                 truthy_words=("instrumental", "no vocal", "non vocal"),
@@ -860,6 +851,7 @@ def upgrade_csv(
     *,
     excel_time_text: bool = False,
     strict_facts: bool = False,
+    show_progress: bool = False,
 ) -> tuple[int, int]:
     with input_path.open("r", newline="", encoding="utf-8-sig") as source_file:
         reader = csv.DictReader(source_file)
@@ -867,6 +859,7 @@ def upgrade_csv(
             raise ValueError(f"{input_path} has no CSV header")
 
         normalized_headers = {normalize_header(header): header for header in reader.fieldnames}
+        source_rows = list(reader)
         csv_context = input_path.stem
         genre_by_song: dict[str, str] = {}
 
@@ -880,26 +873,42 @@ def upgrade_csv(
             with temporary_path.open("w", newline="", encoding="utf-8-sig") as target_file:
                 writer = csv.DictWriter(target_file, fieldnames=OUTPUT_COLUMNS, extrasaction="ignore")
                 writer.writeheader()
-                for row in reader:
-                    output_row = build_output_row(
-                        row,
-                        normalized_headers,
-                        duration_resolver,
-                        excel_time_text=excel_time_text,
-                        csv_context=csv_context,
-                        genre_by_song=genre_by_song,
-                    )
-                    identity = output_identity_key(output_row)
-                    if identity in seen_output_rows:
-                        continue
-                    seen_output_rows.add(identity)
-                    issues = factual_issues(output_row) if strict_facts else []
-                    if issues:
-                        unresolved.append(f"{output_row.get('filename') or output_row.get('title')}: {', '.join(issues)}")
-                    writer.writerow(output_row)
-                    rows += 1
-                    if output_row["tag"]:
-                        tagged_rows += 1
+                with tqdm(
+                    source_rows,
+                    total=len(source_rows),
+                    desc=f"Converting {input_path.name}",
+                    unit="row",
+                    dynamic_ncols=True,
+                    mininterval=0.5,
+                    disable=not show_progress,
+                ) as progress:
+                    for row in progress:
+                        current_name = filename_for_row(row, normalized_headers) or row_value(
+                            row, normalized_headers, "title"
+                        )
+                        if current_name:
+                            progress.set_postfix_str(clean_value(current_name)[:45], refresh=False)
+                        output_row = build_output_row(
+                            row,
+                            normalized_headers,
+                            duration_resolver,
+                            excel_time_text=excel_time_text,
+                            csv_context=csv_context,
+                            genre_by_song=genre_by_song,
+                        )
+                        identity = output_identity_key(output_row)
+                        if identity in seen_output_rows:
+                            continue
+                        seen_output_rows.add(identity)
+                        issues = factual_issues(output_row) if strict_facts else []
+                        if issues:
+                            unresolved.append(
+                                f"{output_row.get('filename') or output_row.get('title')}: {', '.join(issues)}"
+                            )
+                        writer.writerow(output_row)
+                        rows += 1
+                        if output_row["tag"]:
+                            tagged_rows += 1
                 target_file.flush()
                 os.fsync(target_file.fileno())
             if unresolved:
@@ -991,6 +1000,7 @@ def main() -> int:
                 duration_resolver,
                 excel_time_text=args.excel_time_text,
                 strict_facts=bool(args.media_root) and not args.allow_unresolved_facts,
+                show_progress=True,
             )
         except ValueError as exc:
             print(f"failed: {csv_path}\n{exc}")

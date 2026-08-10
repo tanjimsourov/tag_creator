@@ -120,7 +120,10 @@ def test_en_dash_filename_repairs_artist(tmp_path: Path, monkeypatch) -> None:
     assert result[0]["title"] == "A New Day"
 
 
-def test_final_completion_vocal_and_missing_bpm_are_reanalyzed(tmp_path: Path, monkeypatch) -> None:
+def test_complete_source_values_bypass_local_ai_even_with_final_completion_source(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
     monkeypatch.setenv("GENRE_API_ENABLED", "false")
     media = tmp_path / "Artist - Song.mp4"
     media.write_bytes(b"media")
@@ -144,9 +147,50 @@ def test_final_completion_vocal_and_missing_bpm_are_reanalyzed(tmp_path: Path, m
                 "language": "English",
                 "label": "SMC",
                 "vocals": "vocal",
-                "bpm": "unknown bpm",
+                "bpm": "127",
                 "duration_seconds": "180",
                 "sources": json.dumps({"vocals": "final_completion", "bpm": "final_completion"}),
+            }
+        ],
+    )
+
+    resolver = MediaDurationResolver([tmp_path])
+    monkeypatch.setattr(resolver, "_audio_facts", lambda _path: pytest.fail("local AI must not run"))
+    upgrade_csv(source, output, resolver, strict_facts=True)
+
+    result = _read_rows(output)[0]
+    assert result["tempo"] == "127"
+    assert result["vocal"] == "1"
+    assert result["instrumental"] == "0"
+    assert result["isDL"] == "1"
+
+
+def test_missing_vocal_and_bpm_use_local_ai(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("GENRE_API_ENABLED", "false")
+    media = tmp_path / "Artist - Song.mp4"
+    media.write_bytes(b"media")
+    source = tmp_path / "input.csv"
+    output = tmp_path / "input_with_tag.csv"
+    _write_source(
+        source,
+        [
+            {
+                "title": "Song",
+                "artist": "Artist",
+                "album": "Single",
+                "genre": "Pop",
+                "subgenre": "Dance-pop",
+                "mood": "Upbeat",
+                "weather": "All Weather",
+                "season": "All Season",
+                "age_group": "Youth/Adult",
+                "filename": media.name,
+                "year": "2025",
+                "language": "English",
+                "label": "SMC",
+                "vocals": "",
+                "bpm": "unknown bpm",
+                "duration_seconds": "180",
             }
         ],
     )
@@ -163,7 +207,6 @@ def test_final_completion_vocal_and_missing_bpm_are_reanalyzed(tmp_path: Path, m
     assert result["tempo"] == "127"
     assert result["vocal"] == "0"
     assert result["instrumental"] == "1"
-    assert result["isDL"] == "1"
 
 
 def test_strict_final_rejects_unmeasured_facts_without_replacing_output(tmp_path: Path, monkeypatch) -> None:
