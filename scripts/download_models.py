@@ -67,6 +67,14 @@ MODELS: dict[str, dict] = {
         "sha256": None,
         "core": True,
     },
+    "voice_instrumental_head": {
+        "url": f"{ZOO}/classification-heads/voice_instrumental/voice_instrumental-discogs-effnet-1.pb",
+        "local": "voice_instrumental-discogs-effnet.pb",
+        "labels_json": f"{ZOO}/classification-heads/voice_instrumental/voice_instrumental-discogs-effnet-1.json",
+        "labels_local": "voice_instrumental-labels.txt",
+        "sha256": None,
+        "core": True,
+    },
 }
 
 

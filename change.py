@@ -524,8 +524,13 @@ class MissingLanguageResolver:
 
 
 class MediaDurationResolver:
-    def __init__(self, media_roots: list[Path]) -> None:
+    def __init__(self, media_roots: list[Path], *, verify_vocals: bool | None = None) -> None:
         self.media_roots = [root for root in media_roots if root.exists()]
+        self.verify_vocals = (
+            verify_vocals
+            if verify_vocals is not None
+            else os.getenv("VERIFY_VOCAL_FLAGS", "true").strip().lower() in {"1", "true", "yes", "on"}
+        )
         self._name_index: dict[str, list[Path]] | None = None
         self._normalized_name_index: dict[str, list[Path]] | None = None
         self._relative_index: dict[str, Path] | None = None
@@ -701,10 +706,17 @@ class MediaDurationResolver:
         instrumental: str,
         csv_context: str = "",
     ) -> tuple[str, str]:
-        # This converter must preserve a completed source CSV. Provenance such
-        # as ``final_completion`` is useful for auditing, but it does not make
-        # an explicit vocal/instrumental value missing. Only invoke the slower
-        # local model when the existing columns cannot provide a valid pair.
+        media_path = self.resolve_media_path(row, header_map, csv_context)
+        if self.verify_vocals and media_path:
+            facts = self._audio_facts(media_path)
+            if facts.get("vocal") in {"0", "1"}:
+                return facts["vocal"], facts["instrumental"]
+            # Do not preserve a generic source fallback as an audio fact. In
+            # strict mode the unresolved pair will reject the output instead.
+            return "", ""
+
+        # Verification can be disabled explicitly for legacy conversions that
+        # have no mounted media. In that mode preserve a valid source pair.
         if clean_value(vocals) or clean_value(instrumental):
             instrumental_flag = boolean_flag(
                 instrumental or vocals,
@@ -716,7 +728,6 @@ class MediaDurationResolver:
             if vocal_flag == "1":
                 return "1", "0"
 
-        media_path = self.resolve_media_path(row, header_map, csv_context)
         if media_path:
             facts = self._audio_facts(media_path)
             if facts.get("vocal") in {"0", "1"}:
@@ -742,7 +753,11 @@ class MediaDurationResolver:
         analysis_path, temporary_path = self._analysis_preview(path)
         try:
             try:
-                from tag_creator.local_ai_runner import run_clap_zero_shot, run_essentia_features
+                from tag_creator.local_ai_runner import (
+                    run_clap_zero_shot,
+                    run_essentia_features,
+                    run_essentia_voice_instrumental,
+                )
             except ImportError as exc:
                 errors.append(f"{type(exc).__name__}: {exc}")
             else:
@@ -754,8 +769,59 @@ class MediaDurationResolver:
                 except Exception as exc:  # noqa: BLE001 - one media failure must not stop the batch
                     errors.append(f"BPM {type(exc).__name__}: {exc}")
 
+                model_dir = Path(os.getenv("LOCAL_AI_MODELS_DIR", "models/local_ai"))
+                embedding_model = Path(
+                    os.getenv(
+                        "ESSENTIA_DISCOGS_EMBEDDING_MODEL",
+                        str(model_dir / "discogs-effnet-embeddings.pb"),
+                    )
+                )
+                voice_model = Path(
+                    os.getenv(
+                        "ESSENTIA_VOICE_INSTRUMENTAL_MODEL",
+                        str(model_dir / "voice_instrumental-discogs-effnet.pb"),
+                    )
+                )
+                voice_labels = Path(
+                    os.getenv(
+                        "ESSENTIA_VOICE_INSTRUMENTAL_LABELS",
+                        str(model_dir / "voice_instrumental-labels.txt"),
+                    )
+                )
                 try:
-                    clap_result = run_clap_zero_shot(
+                    if not all(path.exists() for path in (embedding_model, voice_model, voice_labels)):
+                        raise FileNotFoundError("dedicated voice/instrumental model files are missing")
+                    voice_result = run_essentia_voice_instrumental(
+                        Namespace(
+                            audio=analysis_path,
+                            embedding_model=embedding_model,
+                            prediction_model=voice_model,
+                            labels=voice_labels,
+                            output_node="model/Softmax",
+                        )
+                    )
+                    ranked = voice_result.get("tags", [])
+                    if len(ranked) < 2:
+                        raise ValueError("voice/instrumental model returned fewer than two classes")
+                    top_score = float(ranked[0].get("score", 0.0))
+                    second_score = float(ranked[1].get("score", 0.0))
+                    min_confidence = float(os.getenv("VOCAL_MIN_CONFIDENCE", "0.60"))
+                    min_margin = float(os.getenv("VOCAL_MIN_MARGIN", "0.10"))
+                    if top_score < min_confidence or (top_score - second_score) < min_margin:
+                        raise ValueError(
+                            f"low voice/instrumental confidence: {top_score:.3f}/{second_score:.3f}"
+                        )
+                    is_instrumental = clean_value(str(ranked[0].get("label", ""))).lower() == "instrumental"
+                    facts["vocal"] = "0" if is_instrumental else "1"
+                    facts["instrumental"] = "1" if is_instrumental else "0"
+                    facts["vocal_confidence"] = f"{top_score:.3f}"
+                    facts["vocal_source"] = "essentia_voice_instrumental"
+                except Exception as exc:  # noqa: BLE001 - CLAP remains a measured fallback
+                    errors.append(f"dedicated vocals {type(exc).__name__}: {exc}")
+
+                if "vocal" not in facts:
+                    try:
+                        clap_result = run_clap_zero_shot(
                         Namespace(
                             audio=analysis_path,
                             model_name=os.getenv("CLAP_MODEL_NAME", "laion/clap-htsat-unfused"),
@@ -764,14 +830,24 @@ class MediaDurationResolver:
                             top_n=2,
                             max_seconds=max(15, int(os.getenv("CLAP_MAX_SECONDS", "45"))),
                         )
-                    )
-                    ranked = [tag for tag in clap_result.get("tags", []) if tag.get("field") == "vocals"]
-                    if ranked:
+                        )
+                        ranked = [tag for tag in clap_result.get("tags", []) if tag.get("field") == "vocals"]
+                        if len(ranked) < 2:
+                            raise ValueError("CLAP returned fewer than two vocal classes")
+                        top_score = float(ranked[0].get("score", 0.0))
+                        second_score = float(ranked[1].get("score", 0.0))
+                        min_margin = float(os.getenv("CLAP_VOCAL_MIN_MARGIN", "0.02"))
+                        if (top_score - second_score) < min_margin:
+                            raise ValueError(
+                                f"low CLAP vocal confidence: {top_score:.3f}/{second_score:.3f}"
+                            )
                         is_instrumental = clean_value(str(ranked[0].get("label", ""))).lower() == "instrumental"
                         facts["vocal"] = "0" if is_instrumental else "1"
                         facts["instrumental"] = "1" if is_instrumental else "0"
-                except Exception as exc:  # noqa: BLE001 - preserve independently measured BPM
-                    errors.append(f"vocals {type(exc).__name__}: {exc}")
+                        facts["vocal_confidence"] = f"{top_score:.3f}"
+                        facts["vocal_source"] = "clap_zero_shot"
+                    except Exception as exc:  # noqa: BLE001 - preserve independently measured BPM
+                        errors.append(f"CLAP vocals {type(exc).__name__}: {exc}")
         finally:
             if temporary_path and temporary_path.exists():
                 temporary_path.unlink()

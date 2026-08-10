@@ -154,7 +154,7 @@ def test_complete_source_values_bypass_local_ai_even_with_final_completion_sourc
         ],
     )
 
-    resolver = MediaDurationResolver([tmp_path])
+    resolver = MediaDurationResolver([tmp_path], verify_vocals=False)
     monkeypatch.setattr(resolver, "_audio_facts", lambda _path: pytest.fail("local AI must not run"))
     upgrade_csv(source, output, resolver, strict_facts=True)
 
@@ -163,6 +163,49 @@ def test_complete_source_values_bypass_local_ai_even_with_final_completion_sourc
     assert result["vocal"] == "1"
     assert result["instrumental"] == "0"
     assert result["isDL"] == "1"
+
+
+def test_existing_vocal_fallback_is_reverified_from_audio(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("GENRE_API_ENABLED", "false")
+    media = tmp_path / "Artist - Instrumental.mp4"
+    media.write_bytes(b"media")
+    source = tmp_path / "input.csv"
+    output = tmp_path / "input_with_tag.csv"
+    _write_source(
+        source,
+        [
+            {
+                "title": "Instrumental",
+                "artist": "Artist",
+                "album": "Single",
+                "genre": "Ambient",
+                "subgenre": "Ambient",
+                "mood": "Calm",
+                "weather": "All Weather",
+                "season": "All Season",
+                "age_group": "General",
+                "filename": media.name,
+                "year": "2025",
+                "language": "English",
+                "label": "SMC",
+                "vocals": "vocal",
+                "bpm": "90",
+                "duration_seconds": "180",
+            }
+        ],
+    )
+
+    resolver = MediaDurationResolver([tmp_path], verify_vocals=True)
+    monkeypatch.setattr(
+        resolver,
+        "_audio_facts",
+        lambda _path: {"bpm": "90", "vocal": "0", "instrumental": "1"},
+    )
+    upgrade_csv(source, output, resolver, strict_facts=True)
+
+    result = _read_rows(output)[0]
+    assert result["vocal"] == "0"
+    assert result["instrumental"] == "1"
 
 
 def test_missing_vocal_and_bpm_use_local_ai(tmp_path: Path, monkeypatch) -> None:

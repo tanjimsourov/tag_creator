@@ -135,6 +135,26 @@ def run_essentia_discogs_effnet(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def run_essentia_voice_instrumental(args: argparse.Namespace) -> dict[str, Any]:
+    """Classify real audio as voice or instrumental with the dedicated MTG head."""
+    from essentia.standard import TensorflowPredictEffnetDiscogs
+
+    audio = _load_audio(args.audio, rate=16000)
+    embeddings = TensorflowPredictEffnetDiscogs(graphFilename=str(args.embedding_model))(audio)
+    predictions = _run_prediction_head(
+        embeddings,
+        str(args.prediction_model),
+        getattr(args, "output_node", "model/Softmax"),
+    )
+    return {
+        "provider": "essentia_voice_instrumental",
+        "audio": str(args.audio),
+        "embedding_model": str(args.embedding_model),
+        "prediction_model": str(args.prediction_model),
+        "tags": _top_tags(predictions, _load_labels(args.labels), 2),
+    }
+
+
 def run_musicnn_mtg_jamendo(args: argparse.Namespace) -> dict[str, Any]:
     from essentia.standard import TensorflowPredictMusiCNN
 
