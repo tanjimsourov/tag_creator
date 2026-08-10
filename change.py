@@ -6,14 +6,17 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 import unicodedata
 from argparse import Namespace
 from pathlib import Path
 
+import requests
 from mutagen import File as MutagenFile
 from tqdm import tqdm
 
 from tag_creator.genre_catalog import normalize_genre_name
+from tag_creator.matching import plausible_track_match
 
 
 SOURCE_COLUMNS = ("subgenre", "mood", "moods", "weather", "season", "age_group")
@@ -341,6 +344,183 @@ def time_to_seconds(value: str) -> int:
     except (TypeError, ValueError):
         return 0
     return max(0, hours * 3600 + minutes * 60 + seconds)
+
+
+LANGUAGE_NAMES = {
+    "da": "Danish",
+    "de": "German",
+    "en": "English",
+    "es": "Spanish",
+    "fi": "Finnish",
+    "fr": "French",
+    "is": "Icelandic",
+    "it": "Italian",
+    "nl": "Dutch",
+    "no": "Norwegian",
+    "pl": "Polish",
+    "pt": "Portuguese",
+    "sv": "Swedish",
+    "tr": "Turkish",
+}
+
+
+class MissingLanguageResolver:
+    """Resolve only blank/placeholder language values from textual evidence."""
+
+    def __init__(self, *, enabled: bool = True, session: requests.Session | None = None) -> None:
+        self.enabled = enabled
+        self.session = session or requests.Session()
+        self.session.headers.setdefault(
+            "User-Agent",
+            os.getenv("LANGUAGE_LOOKUP_USER_AGENT", "SMC-Tag-Creator/0.1 (tanjim@advikon.eu)"),
+        )
+        self.timeout = max(3, int(os.getenv("LANGUAGE_LOOKUP_TIMEOUT_SECONDS", "15")))
+        self._cache: dict[tuple[str, str, str, str], str] = {}
+
+    def resolve(self, existing: str, *, title: str, artist: str, album: str, csv_context: str) -> str:
+        cleaned = clean_value(existing)
+        if cleaned and not is_missing_identity(cleaned):
+            return cleaned
+        if not self.enabled:
+            return ""
+
+        cache_key = (
+            canonical_title(title),
+            canonical_value(artist),
+            canonical_value(album),
+            canonical_value(csv_context),
+        )
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+
+        language = self._language_from_lrclib(title, artist, csv_context)
+        if not language:
+            language = self._language_from_identity_text(title, album, csv_context)
+        self._cache[cache_key] = language
+        return language
+
+    def _language_from_lrclib(self, title: str, artist: str, csv_context: str) -> str:
+        if not title:
+            return ""
+        params = {"track_name": title}
+        if artist and not is_missing_identity(artist):
+            params["artist_name"] = artist
+
+        for attempt in range(2):
+            try:
+                response = self.session.get(
+                    "https://lrclib.net/api/search",
+                    params=params,
+                    timeout=(5, self.timeout),
+                )
+            except requests.RequestException:
+                return ""
+            if response.status_code in {429, 500, 502, 503, 504} and attempt == 0:
+                time.sleep(1.0)
+                continue
+            if not response.ok:
+                return ""
+            try:
+                candidates = response.json()
+            except ValueError:
+                return ""
+            if not isinstance(candidates, list):
+                return ""
+
+            ranked: list[tuple[float, str]] = []
+            for candidate in candidates[:10]:
+                if not isinstance(candidate, dict):
+                    continue
+                candidate_title = clean_value(candidate.get("trackName") or candidate.get("name") or "")
+                candidate_artist = clean_value(candidate.get("artistName") or "")
+                plausible, title_score, artist_score = plausible_track_match(
+                    title,
+                    "" if is_missing_identity(artist) else artist,
+                    candidate_title,
+                    candidate_artist,
+                    min_title=0.72,
+                    min_artist=0.50,
+                )
+                lyrics = clean_value(candidate.get("plainLyrics") or candidate.get("syncedLyrics") or "")
+                if plausible and lyrics:
+                    ranked.append(((title_score * 0.65) + (artist_score * 0.35), lyrics))
+            if not ranked:
+                return ""
+            lyrics = max(ranked, key=lambda item: item[0])[1]
+            detected = self._detect_text_language(lyrics, min_characters=120, min_confidence=0.80)
+            return self._refine_nordic_language(lyrics, detected, csv_context)
+        return ""
+
+    @staticmethod
+    def _refine_nordic_language(text: str, detected: str, csv_context: str) -> str:
+        """Correct common Danish/Norwegian/Swedish detector confusion from lexical evidence."""
+        tokens = set(re.findall(r"[a-zà-ÿ]+", clean_value(text).casefold()))
+        danish_words = {
+            "arbejdsplads", "behøver", "dæmoner", "dig", "græder", "hvad",
+            "jer", "kærlighed", "køre", "kvinde", "ligesom", "mænd", "mig",
+            "nogen", "noget", "sådan", "smukkest", "stadig", "tænker", "uden",
+        }
+        norwegian_words = {
+            "arbeidsplass", "deg", "dere", "fortsatt", "gråter", "hva",
+            "kjærlighet", "kjøre", "kvinne", "liksom", "meg", "menn", "noe",
+            "noen", "sånn", "tenker", "uten", "våre",
+        }
+        swedish_words = {
+            "aldrig", "att", "dig", "eftersom", "från", "inte", "jag", "kvinna",
+            "men", "mig", "någon", "något", "och", "ska", "tänker", "utan",
+        }
+        danish_score = len(tokens & danish_words)
+        norwegian_score = len(tokens & norwegian_words)
+        swedish_score = len(tokens & swedish_words)
+
+        # Full lyrics need several independent Danish markers. For a Denmark
+        # catalog, two markers are sufficient supporting evidence because the
+        # track identity was already verified before lyric analysis.
+        required_score = 2 if "denmark" in canonical_value(csv_context) else 3
+        if danish_score >= required_score and danish_score > max(norwegian_score, swedish_score):
+            return "Danish"
+        return detected
+
+    @staticmethod
+    def _detect_text_language(text: str, *, min_characters: int, min_confidence: float) -> str:
+        sample = re.sub(r"\[[^\]]*\]", " ", clean_value(text))
+        sample = re.sub(r"\s+", " ", sample).strip()[:12000]
+        if len(sample) < min_characters:
+            return ""
+        try:
+            from langdetect import DetectorFactory, detect_langs
+        except ImportError:
+            return ""
+        DetectorFactory.seed = 0
+        try:
+            predictions = detect_langs(sample)
+        except Exception:  # langdetect raises several errors for unsuitable text
+            return ""
+        if not predictions:
+            return ""
+        best = predictions[0]
+        code = str(getattr(best, "lang", "")).lower()
+        probability = float(getattr(best, "prob", 0.0))
+        return LANGUAGE_NAMES.get(code, "") if probability >= min_confidence else ""
+
+    @classmethod
+    def _language_from_identity_text(cls, title: str, album: str, csv_context: str) -> str:
+        text = clean_value(" ".join(value for value in (title, album) if value))
+        # Short titles are difficult for statistical detectors. These markers
+        # are accepted only with matching Denmark context and clear Danish text.
+        context = canonical_value(csv_context)
+        lowered = f" {text.casefold()} "
+        danish_markers = (
+            "kærlighed", "dæmon", "sådan", "nogen", "mænd", "græder",
+            "søndag", "feberdrøm", "ødemark", " øde ", " gå ", " dig ",
+        )
+        if "denmark" in context and (
+            "æ" in lowered or sum(marker in lowered for marker in danish_markers) >= 1
+        ):
+            return "Danish"
+
+        detected = cls._detect_text_language(text, min_characters=18, min_confidence=0.95)
+        return cls._refine_nordic_language(text, detected, csv_context)
 
 
 class MediaDurationResolver:
@@ -755,6 +935,7 @@ def build_output_row(
     row: dict[str, str],
     header_map: dict[str, str],
     duration_resolver: MediaDurationResolver,
+    language_resolver: MissingLanguageResolver | None = None,
     *,
     excel_time_text: bool = False,
     csv_context: str = "",
@@ -781,6 +962,19 @@ def build_output_row(
     title = resolve_title(row, header_map)
     artist = resolve_artist(row, header_map)
     genre = resolve_single_genre(row, header_map)
+    album = non_placeholder(row_value(row, header_map, "album"), DEFAULT_ALBUM)
+    existing_language = row_value(row, header_map, "language")
+    language = (
+        language_resolver.resolve(
+            existing_language,
+            title=title,
+            artist=artist,
+            album=album,
+            csv_context=csv_context,
+        )
+        if language_resolver
+        else non_placeholder(existing_language, "")
+    )
     key = song_key(title, artist)
     if genre_by_song is not None and key != "::":
         if key in genre_by_song:
@@ -790,14 +984,14 @@ def build_output_row(
 
     output_row = {
         "title": non_placeholder(title, fallback_from_filename(filename_for_row(row, header_map), "title")),
-        "album": non_placeholder(row_value(row, header_map, "album"), DEFAULT_ALBUM),
+        "album": album,
         "artist": non_placeholder(artist, fallback_from_filename(filename_for_row(row, header_map), "artist")),
         "time": excel_text(resolved_time) if excel_time_text else resolved_time,
         "genre": non_placeholder(genre, ""),
         "tempo": resolved_bpm,
         "filename": non_placeholder(row_value(row, header_map, "filename"), basename_from_value(row_value(row, header_map, "file_path", "path"))),
         "year": non_placeholder(row_value(row, header_map, "year"), ""),
-        "language": non_placeholder(row_value(row, header_map, "language"), ""),
+        "language": language,
         "isDL": duration_resolver.is_downloaded(row, header_map, csv_context)
         if duration_resolver.has_media_roots()
         else downloaded_flag(existing_isdl),
@@ -852,6 +1046,7 @@ def upgrade_csv(
     excel_time_text: bool = False,
     strict_facts: bool = False,
     show_progress: bool = False,
+    language_resolver: MissingLanguageResolver | None = None,
 ) -> tuple[int, int]:
     with input_path.open("r", newline="", encoding="utf-8-sig") as source_file:
         reader = csv.DictReader(source_file)
@@ -892,6 +1087,7 @@ def upgrade_csv(
                             row,
                             normalized_headers,
                             duration_resolver,
+                            language_resolver,
                             excel_time_text=excel_time_text,
                             csv_context=csv_context,
                             genre_by_song=genre_by_song,
@@ -987,6 +1183,9 @@ def main() -> int:
         return 0
 
     duration_resolver = MediaDurationResolver([Path(root) for root in args.media_root])
+    language_resolver = MissingLanguageResolver(
+        enabled=os.getenv("MISSING_LANGUAGE_LOOKUP_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+    )
     processed = 0
     for csv_path in csv_files:
         output_path = output_path_for(csv_path, args.suffix)
@@ -1001,6 +1200,7 @@ def main() -> int:
                 excel_time_text=args.excel_time_text,
                 strict_facts=bool(args.media_root) and not args.allow_unresolved_facts,
                 show_progress=True,
+                language_resolver=language_resolver,
             )
         except ValueError as exc:
             print(f"failed: {csv_path}\n{exc}")

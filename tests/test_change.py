@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from change import MediaDurationResolver, OUTPUT_COLUMNS, clean_value, upgrade_csv
+from change import MissingLanguageResolver, MediaDurationResolver, OUTPUT_COLUMNS, clean_value, upgrade_csv
 
 
 def _write_source(path: Path, rows: list[dict[str, str]]) -> None:
@@ -233,3 +233,43 @@ def test_strict_final_rejects_unmeasured_facts_without_replacing_output(tmp_path
 
 def test_common_utf8_mojibake_is_repaired() -> None:
     assert clean_value("K\u00c3\u00a6rlighed") == "K\u00e6rlighed"
+
+
+def test_missing_language_resolver_preserves_existing_value(monkeypatch) -> None:
+    resolver = MissingLanguageResolver()
+    monkeypatch.setattr(
+        resolver.session,
+        "get",
+        lambda *args, **kwargs: pytest.fail("lookup must not run for an existing language"),
+    )
+
+    assert resolver.resolve(
+        "English",
+        title="Song",
+        artist="Artist",
+        album="Single",
+        csv_context="100 % Denmark",
+    ) == "English"
+
+
+def test_nordic_refinement_corrects_danish_lyrics_misdetected_as_norwegian() -> None:
+    lyrics = (
+        "Jeg vil ikke gå med dig. Jeg tænker hele tiden på dig. "
+        "Selvom jeg tror på nogen, vil jeg gerne køre med dig."
+    )
+
+    assert MissingLanguageResolver._refine_nordic_language(
+        lyrics,
+        "Norwegian",
+        "100 % Denmark",
+    ) == "Danish"
+
+
+def test_nordic_refinement_keeps_real_norwegian() -> None:
+    lyrics = "Jeg tenker på deg og meg. Noen kjører uten deg, men hva gjør vi nå?"
+
+    assert MissingLanguageResolver._refine_nordic_language(
+        lyrics,
+        "Norwegian",
+        "Norway",
+    ) == "Norwegian"
