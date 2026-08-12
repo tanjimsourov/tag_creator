@@ -115,6 +115,13 @@ def normalized_filename_key(value: str) -> str:
     return f"{stem}{suffix}"
 
 
+def duplicate_filename_key(value: str) -> str:
+    """Normalize filename punctuation without collapsing meaningful accents."""
+
+    cleaned = unicodedata.normalize("NFKC", basename_from_value(value)).casefold()
+    return " ".join(re.sub(r"[\W_]+", " ", cleaned, flags=re.UNICODE).split())
+
+
 def title_case_value(value: str) -> str:
     cleaned = clean_value(value)
     if not cleaned:
@@ -1108,6 +1115,53 @@ def output_identity_key(output_row: dict[str, str]) -> tuple[str, str, str, tupl
     )
 
 
+def output_row_quality_score(output_row: dict[str, str]) -> int:
+    """Rank duplicate filename candidates without inventing missing facts."""
+
+    score = sum(
+        5
+        for field in ("title", "album", "artist", "genre", "tempo", "filename", "year", "language", "label", "tag")
+        if clean_value(output_row.get(field, ""))
+    )
+    if time_to_seconds(output_row.get("time", "")) > 0:
+        score += 15
+    if output_row.get("isDL") == "1":
+        score += 10
+    vocal = output_row.get("vocal", "")
+    instrumental = output_row.get("instrumental", "")
+    if vocal in {"0", "1"} and instrumental in {"0", "1"} and int(vocal) + int(instrumental) == 1:
+        score += 10
+
+    title_key = canonical_value(output_row.get("title", ""))
+    artist_key = canonical_value(output_row.get("artist", ""))
+    filename_artist, _filename_title = parse_artist_title_from_filename(output_row.get("filename", ""))
+    filename_artist_key = canonical_value(filename_artist)
+    has_artist_prefix = bool(
+        (artist_key and (title_key == artist_key or title_key.startswith(f"{artist_key} ")))
+        or (
+            filename_artist_key
+            and (title_key == filename_artist_key or title_key.startswith(f"{filename_artist_key} "))
+        )
+    )
+    score += -25 if has_artist_prefix else 25
+    if artist_key and filename_artist_key and artist_key == filename_artist_key:
+        score += 10
+    return score
+
+
+def cleaning_issues(output_row: dict[str, str]) -> list[str]:
+    """Return the issue iii/iv reasons that require removing a converted row."""
+
+    issues: list[str] = []
+    if output_row.get("isDL") != "1" or time_to_seconds(output_row.get("time", "")) <= 0:
+        issues.append("media or duration not resolved")
+
+    for field in ("artist", "language", "genre", "tempo", "year", "vocal", "instrumental"):
+        if not clean_value(output_row.get(field, "")):
+            issues.append(f"{field} missing")
+    return issues
+
+
 def enforce_distinct_tags(output_row: dict[str, str]) -> None:
     blocked = {
         canonical_value(output_row.get("title", "")),
@@ -1304,12 +1358,19 @@ def upgrade_csv(
         source_rows = list(reader)
         csv_context = input_path.stem
         genre_by_song: dict[str, str] = {}
+        grouped_source_rows: dict[str, list[tuple[int, dict[str, str]]]] = {}
+        for source_index, row in enumerate(source_rows):
+            filename_key = duplicate_filename_key(filename_for_row(row, normalized_headers))
+            group_key = filename_key or f"__row_{source_index}"
+            grouped_source_rows.setdefault(group_key, []).append((source_index, row))
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         seen_output_rows: set[tuple[str, str, str, tuple[str, ...]]] = set()
         rows = 0
         tagged_rows = 0
         unresolved: list[str] = []
+        removed: list[str] = []
+        duplicate_rows = len(source_rows) - len(grouped_source_rows)
         fsync_every_rows = max(1, int(os.getenv("CSV_FSYNC_EVERY_ROWS", "25")))
         print(f"streaming output: {output_path}")
         with output_path.open("w", newline="", encoding="utf-8-sig") as target_file:
@@ -1318,7 +1379,6 @@ def upgrade_csv(
             target_file.flush()
             os.fsync(target_file.fileno())
             with tqdm(
-                source_rows,
                 total=len(source_rows),
                 desc=f"Converting {input_path.name}",
                 unit="row",
@@ -1326,25 +1386,39 @@ def upgrade_csv(
                 mininterval=0.5,
                 disable=not show_progress,
             ) as progress:
-                for row in progress:
-                    current_name = filename_for_row(row, normalized_headers) or row_value(
-                        row, normalized_headers, "title"
-                    )
-                    if current_name:
-                        progress.set_postfix_str(clean_value(current_name)[:45], refresh=False)
-                    output_row = build_output_row(
-                        row,
-                        normalized_headers,
-                        duration_resolver,
-                        language_resolver,
-                        excel_time_text=excel_time_text,
-                        csv_context=csv_context,
-                        genre_by_song=genre_by_song,
-                    )
+                for source_group in grouped_source_rows.values():
+                    candidates: list[tuple[int, int, dict[str, str]]] = []
+                    for source_index, row in source_group:
+                        current_name = filename_for_row(row, normalized_headers) or row_value(
+                            row, normalized_headers, "title"
+                        )
+                        if current_name:
+                            progress.set_postfix_str(clean_value(current_name)[:45], refresh=False)
+                        output_row = build_output_row(
+                            row,
+                            normalized_headers,
+                            duration_resolver,
+                            language_resolver,
+                            excel_time_text=excel_time_text,
+                            csv_context=csv_context,
+                            genre_by_song=genre_by_song,
+                        )
+                        candidates.append((output_row_quality_score(output_row), -source_index, output_row))
+                        progress.update(1)
+
+                    output_row = max(candidates, key=lambda candidate: (candidate[0], candidate[1]))[2]
                     identity = output_identity_key(output_row)
                     if identity in seen_output_rows:
                         continue
                     seen_output_rows.add(identity)
+                    removal_issues = cleaning_issues(output_row) if strict_facts else []
+                    if removal_issues:
+                        removed.append(
+                            f"{output_row.get('filename') or output_row.get('title')}: "
+                            f"{', '.join(removal_issues)}"
+                        )
+                        continue
+
                     issues = factual_issues(output_row) if strict_facts else []
                     if issues:
                         unresolved.append(
@@ -1359,6 +1433,11 @@ def upgrade_csv(
                         tagged_rows += 1
             os.fsync(target_file.fileno())
 
+        if duplicate_rows or removed:
+            print(
+                f"cleaning complete: duplicate_filename_rows_removed={duplicate_rows}, "
+                f"unresolved_or_incomplete_rows_removed={len(removed)}"
+            )
         if unresolved:
             preview = "\n".join(f"  - {item}" for item in unresolved[:20])
             remainder = len(unresolved) - min(20, len(unresolved))
@@ -1413,7 +1492,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--allow-unresolved-facts",
         action="store_true",
-        help="Disable unresolved-fact warnings. Unique rows are always retained in the copied CSV.",
+        help="Retain rows with unresolved media/duration or missing required metadata.",
     )
     return parser.parse_args()
 
@@ -1446,7 +1525,7 @@ def main() -> int:
                 output_path,
                 duration_resolver,
                 excel_time_text=args.excel_time_text,
-                strict_facts=bool(args.media_root) and not args.allow_unresolved_facts,
+                strict_facts=not args.allow_unresolved_facts,
                 show_progress=True,
                 language_resolver=language_resolver,
             )
