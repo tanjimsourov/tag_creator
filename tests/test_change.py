@@ -320,6 +320,90 @@ def test_duplicate_filename_cleaning_keeps_best_complete_row(tmp_path: Path, mon
     assert result[0]["language"] == "English"
 
 
+def test_duplicate_filename_cleaning_rejects_shifted_metadata_row(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("GENRE_API_ENABLED", "false")
+    source = tmp_path / "input.csv"
+    output = tmp_path / "input_with_tag.csv"
+    filename = "The Rolling Stones - Angry (1080).mp4"
+    _write_source(
+        source,
+        [
+            {
+                "title": "Angry",
+                "artist": "The Rolling Stones",
+                "album": "Hackney Diamonds",
+                "genre": "Rock",
+                "subgenre": "Classic Rock",
+                "year": "2023",
+                "language": "English",
+                "label": "SMC",
+                "vocal": "1",
+                "instrumental": "0",
+                "duration_seconds": "225",
+                "bpm": "112",
+                "isDL": "1",
+                "filename": filename,
+            },
+            {
+                "title": "2023-10-20",
+                "artist": "Rock",
+                "album": "Rock",
+                "genre": "0.58",
+                "subgenre": "0.405",
+                "year": "energetic",
+                "language": "all weather",
+                "label": "SMC",
+                "vocal": "1",
+                "instrumental": "0",
+                "duration_seconds": "225",
+                "bpm": "https://example.test/cover.jpg",
+                "isDL": "1",
+                "filename": filename,
+            },
+        ],
+    )
+
+    written, _tagged = upgrade_csv(source, output, MediaDurationResolver([]), strict_facts=True)
+
+    result = _read_rows(output)
+    assert written == 1
+    assert result[0]["title"] == "Angry"
+    assert result[0]["artist"] == "The Rolling Stones"
+    assert result[0]["genre"] == "Rock"
+    assert result[0]["tempo"] == "112"
+
+
+def test_shifted_numeric_genre_falls_back_to_media_path_genre(monkeypatch) -> None:
+    monkeypatch.setenv("GENRE_API_ENABLED", "false")
+    row = {
+        "title": "2026-06-01",
+        "artist": "Dance",
+        "album": "Dance",
+        "genre": "0.78",
+        "subgenre": "0.372",
+        "mood": "E major",
+        "year": "2026",
+        "language": "English",
+        "label": "SMC",
+        "vocal": "1",
+        "instrumental": "0",
+        "duration_seconds": "156",
+        "bpm": "129",
+        "isDL": "1",
+        "filename": "David Guetta ft Alok & Stick Figure - Run Run River (Angels Above Me) (Lyrics).mp4",
+        "file_path": "/app/input_media/Dance/Aug 2026/David Guetta ft Alok & Stick Figure - Run Run River (Angels Above Me) (Lyrics).mp4",
+    }
+    headers = {key: key for key in row}
+
+    result = change_module.build_output_row(row, headers, MediaDurationResolver([]))
+
+    assert result["title"] == "Run Run River (Angels Above Me) (Lyrics)"
+    assert result["artist"] == "David Guetta ft Alok & Stick Figure"
+    assert result["genre"] == "Dance"
+    assert "0.372" not in result["tag"]
+    assert "E Major" not in result["tag"]
+
+
 def test_strict_cleaning_removes_rows_with_missing_required_metadata(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("GENRE_API_ENABLED", "false")
     source = tmp_path / "input.csv"

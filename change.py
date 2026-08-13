@@ -68,6 +68,35 @@ PLACEHOLDER_VALUES = {
     "not listed",
 }
 
+METADATA_IDENTITY_VALUES = {
+    "all season",
+    "all weather",
+    "ambient",
+    "blues",
+    "classic rock",
+    "dance",
+    "dance pop",
+    "dance-pop",
+    "electro",
+    "electronic",
+    "electronica",
+    "electropop",
+    "energetic",
+    "hard techno",
+    "high",
+    "house",
+    "mainstream",
+    "medium",
+    "medium high",
+    "pop",
+    "popular music",
+    "retail energy",
+    "rock",
+    "rock and roll",
+    "rock roll",
+    "upbeat",
+}
+
 
 def normalize_header(value: str) -> str:
     return value.strip().lower().replace(" ", "_")
@@ -163,7 +192,14 @@ def split_tag_values(value: str) -> list[str]:
 def is_usable_tag(value: str) -> bool:
     lowered = clean_value(value).lower()
     normalized = lowered.replace(" ", "_")
-    return lowered not in PLACEHOLDER_VALUES and not normalized.startswith("needs_review")
+    return (
+        lowered not in PLACEHOLDER_VALUES
+        and not normalized.startswith("needs_review")
+        and not is_date_or_year_value(lowered)
+        and not is_numeric_metadata_value(lowered)
+        and not lowered.startswith(("http://", "https://"))
+        and not re.fullmatch(r"[a-g](?:#|b)?\s+(?:major|minor)", lowered)
+    )
 
 
 def is_missing_identity(value: str) -> bool:
@@ -175,6 +211,34 @@ def is_missing_identity(value: str) -> bool:
         or cleaned.startswith("unknown")
         or cleaned.startswith("not listed")
         or normalized.startswith("needs_review")
+    )
+
+
+def is_date_or_year_value(value: str) -> bool:
+    cleaned = clean_value(value)
+    if re.fullmatch(r"\d{4}(?:-\d{1,2}(?:-\d{1,2})?)?", cleaned):
+        return True
+    return bool(re.fullmatch(r"\d{1,2}/\d{1,2}/\d{2,4}", cleaned))
+
+
+def is_numeric_metadata_value(value: str) -> bool:
+    cleaned = clean_value(value)
+    if not cleaned:
+        return False
+    try:
+        float(cleaned)
+    except ValueError:
+        return False
+    return True
+
+
+def is_unverified_title(value: str) -> bool:
+    cleaned = clean_value(value)
+    return (
+        is_missing_identity(cleaned)
+        or is_date_or_year_value(cleaned)
+        or is_numeric_metadata_value(cleaned)
+        or cleaned.lower().startswith(("http://", "https://"))
     )
 
 
@@ -231,16 +295,74 @@ def fallback_from_filename(filename: str, field: str) -> str:
 
 
 def is_unverified_artist(value: str) -> bool:
-    return is_missing_identity(value) or canonical_value(value) in {"smc", "tag creator"}
+    return is_missing_identity(value) or canonical_value(value) in {"smc", "tag creator"} | METADATA_IDENTITY_VALUES
 
 
-def resolve_single_genre(row: dict[str, str], header_map: dict[str, str]) -> str:
+def is_unverified_genre(value: str) -> bool:
+    cleaned = clean_value(value)
+    return (
+        is_missing_identity(cleaned)
+        or is_date_or_year_value(cleaned)
+        or is_numeric_metadata_value(cleaned)
+        or cleaned.lower().startswith(("http://", "https://"))
+    )
+
+
+def is_unverified_language(value: str) -> bool:
+    cleaned = clean_value(value)
+    return (
+        is_missing_identity(cleaned)
+        or is_date_or_year_value(cleaned)
+        or is_numeric_metadata_value(cleaned)
+        or canonical_value(cleaned) in METADATA_IDENTITY_VALUES
+        or cleaned.lower().startswith(("http://", "https://"))
+    )
+
+
+def genre_from_path(row: dict[str, str], header_map: dict[str, str]) -> str:
+    raw_path = row_value(row, header_map, "file_path", "path")
+    if not raw_path:
+        return ""
+    normalized = raw_path.replace("\\", "/").strip("/")
+    for marker in ("app/input_media/", "app/mp3/", "app/mp4/", "app/media/"):
+        if marker in normalized:
+            normalized = normalized.split(marker, 1)[1]
+            break
+    parts = [clean_value(part) for part in normalized.split("/")[:-1] if clean_value(part)]
+    ignored = {"input_media", "media", "mp3", "mp4", "normalized"}
+    month_names = "jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|january|february|march|april|june|july|august|september|october|november|december"
+    for part in parts:
+        key = canonical_value(part.replace("(new)", ""))
+        if not key or key in ignored:
+            continue
+        if re.fullmatch(r"\d{2,4}s?", key) or re.fullmatch(rf"(?:{month_names})\s+\d{{4}}", key):
+            continue
+        genre = normalize_genre_name(part) or title_case_value(part)
+        if genre and not is_unverified_genre(genre):
+            return genre
+    return ""
+
+
+def resolve_single_genre(
+    row: dict[str, str],
+    header_map: dict[str, str],
+    *,
+    resolved_title: str = "",
+    resolved_artist: str = "",
+) -> str:
     raw_genre = row_value(row, header_map, "genre")
     candidates = split_tag_values(raw_genre)
     primary = candidates[0] if candidates else raw_genre
     normalized = normalize_genre_name(primary)
     normalized_parts = split_tag_values(normalized)
-    return normalized_parts[0] if normalized_parts else title_case_value(primary)
+    genre = normalized_parts[0] if normalized_parts else title_case_value(primary)
+    identity_keys = {canonical_title(resolved_title), canonical_value(resolved_artist)}
+    if genre and not is_unverified_genre(genre) and canonical_value(genre) not in identity_keys:
+        return genre
+    path_genre = genre_from_path(row, header_map)
+    if path_genre and canonical_value(path_genre) not in identity_keys:
+        return path_genre
+    return ""
 
 
 def normalize_tag_value(value: str, source_column: str) -> str:
@@ -264,7 +386,7 @@ def resolve_artist(
     title = standardize_lyrics_marker(row_value(row, header_map, "title"))
     if parsed_artist and (
         is_unverified_artist(artist)
-        or is_missing_identity(title)
+        or is_unverified_title(title)
         or (parsed_title and title and canonical_title(parsed_title) == canonical_title(title))
     ):
         return parsed_artist
@@ -292,12 +414,12 @@ def resolve_title(
     title = standardize_lyrics_marker(row_value(row, header_map, "title"))
     _, parsed_title = parse_artist_title_from_filename(filename)
     if parsed_title and (
-        is_missing_identity(title)
+        is_unverified_title(title)
         or has_lyrics_marker(filename, parsed_title)
         or canonical_value(parsed_title).replace(" lyrics", "") == canonical_value(title)
     ):
         return parsed_title
-    if not is_missing_identity(title):
+    if not is_unverified_title(title):
         return f"{title} (Lyrics)" if has_lyrics_marker(filename) and "(lyrics)" not in title.lower() else title
     if duration_resolver:
         embedded_title = duration_resolver.resolve_embedded_identity(
@@ -306,7 +428,7 @@ def resolve_title(
             "title",
             csv_context,
         )
-        if not is_missing_identity(embedded_title):
+        if not is_unverified_title(embedded_title):
             return standardize_lyrics_marker(embedded_title)
     return fallback_from_filename(filename, "title")
 
@@ -443,7 +565,7 @@ class MissingLanguageResolver:
 
     def resolve(self, existing: str, *, title: str, artist: str, album: str, csv_context: str) -> str:
         cleaned = clean_value(existing)
-        if cleaned and not is_missing_identity(cleaned):
+        if cleaned and not is_unverified_language(cleaned):
             return cleaned
         if not self.enabled:
             return ""
@@ -1118,11 +1240,11 @@ def output_identity_key(output_row: dict[str, str]) -> tuple[str, str, str, tupl
 def output_row_quality_score(output_row: dict[str, str]) -> int:
     """Rank duplicate filename candidates without inventing missing facts."""
 
-    score = sum(
-        5
-        for field in ("title", "album", "artist", "genre", "tempo", "filename", "year", "language", "label", "tag")
-        if clean_value(output_row.get(field, ""))
-    )
+    score = sum(5 for field in ("album", "tempo", "filename", "year", "label", "tag") if clean_value(output_row.get(field, "")))
+    score += 10 if not is_unverified_title(output_row.get("title", "")) else -80
+    score += 10 if not is_unverified_artist(output_row.get("artist", "")) else -60
+    score += 10 if not is_unverified_genre(output_row.get("genre", "")) else -50
+    score += 5 if not is_unverified_language(output_row.get("language", "")) else -20
     if time_to_seconds(output_row.get("time", "")) > 0:
         score += 15
     if output_row.get("isDL") == "1":
@@ -1145,7 +1267,10 @@ def output_row_quality_score(output_row: dict[str, str]) -> int:
     )
     score += -25 if has_artist_prefix else 25
     if artist_key and filename_artist_key and artist_key == filename_artist_key:
-        score += 10
+        score += 20
+    _filename_artist, filename_title = parse_artist_title_from_filename(output_row.get("filename", ""))
+    if filename_title and canonical_title(output_row.get("title", "")) == canonical_title(filename_title):
+        score += 20
     return score
 
 
@@ -1156,9 +1281,27 @@ def cleaning_issues(output_row: dict[str, str]) -> list[str]:
     if output_row.get("isDL") != "1" or time_to_seconds(output_row.get("time", "")) <= 0:
         issues.append("media or duration not resolved")
 
-    for field in ("artist", "language", "genre", "tempo", "year", "vocal", "instrumental"):
+    if is_unverified_title(output_row.get("title", "")):
+        issues.append("title invalid")
+    if is_unverified_artist(output_row.get("artist", "")):
+        issues.append("artist invalid")
+    if is_unverified_genre(output_row.get("genre", "")):
+        issues.append("genre invalid")
+    if is_unverified_language(output_row.get("language", "")):
+        issues.append("language invalid")
+
+    for field in ("tempo", "year", "vocal", "instrumental"):
         if not clean_value(output_row.get(field, "")):
             issues.append(f"{field} missing")
+    year = output_row.get("year", "")
+    if year and (not year.isdigit() or not 1900 <= int(year) <= 2100):
+        issues.append("year invalid")
+    if clean_value(output_row.get("tempo", "")) and not MediaDurationResolver._numeric_bpm(output_row.get("tempo", "")):
+        issues.append("tempo invalid")
+    vocal = output_row.get("vocal", "")
+    instrumental = output_row.get("instrumental", "")
+    if vocal not in {"0", "1"} or instrumental not in {"0", "1"} or int(vocal) + int(instrumental) != 1:
+        issues.append("vocal/instrumental invalid")
     return issues
 
 
@@ -1243,7 +1386,7 @@ def build_output_row(
     existing_isdl = row_value(row, header_map, "isDL", "isdl")
     title = resolve_title(row, header_map, duration_resolver, csv_context)
     artist = resolve_artist(row, header_map, duration_resolver, csv_context)
-    genre = resolve_single_genre(row, header_map)
+    genre = resolve_single_genre(row, header_map, resolved_title=title, resolved_artist=artist)
     album = non_placeholder(row_value(row, header_map, "album"), DEFAULT_ALBUM)
     existing_language = row_value(row, header_map, "language")
     language = (
@@ -1297,8 +1440,14 @@ def factual_issues(output_row: dict[str, str]) -> list[str]:
         value = output_row.get(field, "")
         if not value or is_missing_identity(value):
             issues.append(f"{field} not verified")
+    if is_unverified_title(output_row.get("title", "")):
+        issues.append("title not verified")
     if is_unverified_artist(output_row.get("artist", "")):
         issues.append("artist not verified")
+    if is_unverified_genre(output_row.get("genre", "")):
+        issues.append("genre not verified")
+    if is_unverified_language(output_row.get("language", "")):
+        issues.append("language not verified")
     for field in ("title", "album", "artist", "filename", "label"):
         if contains_mojibake(output_row.get(field, "")):
             issues.append(f"{field} contains unresolved encoding damage")
