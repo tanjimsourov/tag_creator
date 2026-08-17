@@ -114,6 +114,8 @@ def test_split_pair_with_media_root_skips_rows_without_existing_media(tmp_path: 
     media_root = tmp_path / "media"
     (media_root / "Existing").mkdir(parents=True)
     (media_root / "Existing" / "Keep.mp3").write_bytes(b"audio")
+    stale_output = tmp_path / "clean" / "LH MP3" / "Empty.csv"
+    write_csv(stale_output, ["title", "filename", "tag"], [{"title": "Old", "filename": "Old.mp3", "tag": "Old"}])
 
     source = tmp_path / "LH MP3.csv"
     tagged = tmp_path / "LH MP3_with_tag.csv"

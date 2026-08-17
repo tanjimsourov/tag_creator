@@ -238,6 +238,18 @@ def write_csv_atomic(path: Path, fieldnames: list[str], rows: list[dict[str, str
             temporary_path.unlink()
 
 
+def clear_existing_split_csvs(directory: Path) -> int:
+    if not directory.exists():
+        return 0
+
+    removed = 0
+    for path in directory.glob("*.csv"):
+        if path.is_file():
+            path.unlink()
+            removed += 1
+    return removed
+
+
 def split_pair(
     pair: CsvPair,
     *,
@@ -270,11 +282,14 @@ def split_pair(
     )
 
     pair_output_dir = output_root / pair.source_path.stem
+    removed_existing_files = clear_existing_split_csvs(pair_output_dir) if overwrite else 0
     for group_name, rows in sorted(rows_by_group.items(), key=lambda item: safe_csv_name(item[0]).casefold()):
         output_path = pair_output_dir / f"{safe_csv_name(group_name)}.csv"
         write_csv_atomic(output_path, tagged_headers, rows, overwrite=overwrite)
 
     written_rows = sum(len(rows) for rows in rows_by_group.values())
+    if removed_existing_files:
+        print(f"removed stale split CSV files: {removed_existing_files}")
     if skipped_missing_media:
         print(f"skipped source rows with missing media: {skipped_missing_media}")
     return written_rows, len(rows_by_group), unmatched_rows
