@@ -787,15 +787,10 @@ class MediaDurationResolver:
     def resolve_media_path(self, row: dict[str, str], header_map: dict[str, str], csv_context: str = "") -> Path | None:
         raw_file_path = row_value(row, header_map, "file_path", "path")
         filename = row_value(row, header_map, "filename")
-        raw_path = Path(raw_file_path) if raw_file_path else None
-        exact_relative_path = self._exact_relative_path(raw_file_path)
-        if exact_relative_path:
-            for root in self.media_roots:
-                candidate = root / exact_relative_path
-                if candidate.exists() and candidate.is_file():
-                    return candidate
-            return self._relative_media_index().get(self._index_key(exact_relative_path))
+        if raw_file_path:
+            return self._resolve_declared_file_path(raw_file_path)
 
+        raw_path = Path(raw_file_path) if raw_file_path else None
         relative_parts = self._relative_candidates(raw_file_path, filename, csv_context)
 
         candidates: list[Path] = []
@@ -839,12 +834,30 @@ class MediaDurationResolver:
                 return Path(*tail.split("/")) if tail else None
         return None
 
+    def _resolve_declared_file_path(self, raw_file_path: str) -> Path | None:
+        declared = self._declared_relative_path(raw_file_path)
+        if declared:
+            return self._resolve_relative_media_path(declared)
+
+        raw_path = Path(raw_file_path)
+        if raw_path.is_absolute():
+            return raw_path if raw_path.exists() and raw_path.is_file() else None
+
+        return self._resolve_relative_media_path(raw_path)
+
+    def _resolve_relative_media_path(self, relative_path: Path) -> Path | None:
+        for root in self.media_roots:
+            candidate = root / relative_path
+            if candidate.exists() and candidate.is_file():
+                return candidate
+        return self._relative_media_index().get(self._index_key(relative_path))
+
     @classmethod
-    def _exact_relative_path(cls, raw_file_path: str) -> Path | None:
+    def _declared_relative_path(cls, raw_file_path: str) -> Path | None:
         if not raw_file_path:
             return None
         stripped = cls._strip_app_mount(raw_file_path)
-        if stripped and stripped.parent != Path("."):
+        if stripped:
             return stripped
         raw_path = Path(raw_file_path)
         if not raw_path.is_absolute() and raw_path.parent != Path("."):
@@ -1527,6 +1540,16 @@ def upgrade_csv(
         source_rows = list(reader)
         csv_context = input_path.stem
         genre_by_song: dict[str, str] = {}
+        missing_media_rows = 0
+        if duration_resolver.has_media_roots():
+            media_rows: list[dict[str, str]] = []
+            for row in source_rows:
+                if duration_resolver.resolve_media_path(row, normalized_headers, csv_context):
+                    media_rows.append(row)
+                else:
+                    missing_media_rows += 1
+            source_rows = media_rows
+
         grouped_source_rows: dict[str, list[tuple[int, dict[str, str]]]] = {}
         for source_index, row in enumerate(source_rows):
             filename_key = duplicate_filename_key(filename_for_row(row, normalized_headers))
@@ -1540,7 +1563,6 @@ def upgrade_csv(
         unresolved: list[str] = []
         removed: list[str] = []
         duplicate_rows = len(source_rows) - len(grouped_source_rows)
-        missing_media_rows = 0
         fsync_every_rows = max(1, int(os.getenv("CSV_FSYNC_EVERY_ROWS", "25")))
         print(f"streaming output: {output_path}")
         with output_path.open("w", newline="", encoding="utf-8-sig") as target_file:
@@ -1564,14 +1586,6 @@ def upgrade_csv(
                         )
                         if current_name:
                             progress.set_postfix_str(clean_value(current_name)[:45], refresh=False)
-                        if duration_resolver.has_media_roots() and not duration_resolver.resolve_media_path(
-                            row,
-                            normalized_headers,
-                            csv_context,
-                        ):
-                            missing_media_rows += 1
-                            progress.update(1)
-                            continue
                         output_row = build_output_row(
                             row,
                             normalized_headers,

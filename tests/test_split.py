@@ -108,3 +108,43 @@ def test_split_pair_keeps_unmatched_rows_in_unmatched_csv(tmp_path: Path) -> Non
     assert (rows, group_count, unmatched) == (1, 1, 1)
     _headers, unmatched_rows = read_csv(tmp_path / "clean" / "input" / "_unmatched.csv")
     assert unmatched_rows[0]["filename"] == "missing.mp4"
+
+
+def test_split_pair_with_media_root_skips_rows_without_existing_media(tmp_path: Path) -> None:
+    media_root = tmp_path / "media"
+    (media_root / "Existing").mkdir(parents=True)
+    (media_root / "Existing" / "Keep.mp3").write_bytes(b"audio")
+
+    source = tmp_path / "LH MP3.csv"
+    tagged = tmp_path / "LH MP3_with_tag.csv"
+    write_csv(
+        source,
+        ["filename", "file_path"],
+        [
+            {"filename": "Keep.mp3", "file_path": "/app/input_media/Existing/Keep.mp3"},
+            {"filename": "Skip.mp3", "file_path": "/app/input_media/Empty/Skip.mp3"},
+        ],
+    )
+    write_csv(
+        tagged,
+        ["title", "filename", "tag"],
+        [
+            {"title": "Keep", "filename": "Keep.mp3", "tag": "Upbeat"},
+            {"title": "Skip", "filename": "Skip.mp3", "tag": "Balanced"},
+        ],
+    )
+
+    rows, group_count, unmatched = split_pair(
+        CsvPair(source, tagged),
+        output_root=tmp_path / "clean",
+        media_prefixes=("/app/input_media",),
+        group_by="top",
+        media_roots=(media_root,),
+        overwrite=True,
+    )
+
+    assert (rows, group_count, unmatched) == (1, 1, 1)
+    _headers, existing_rows = read_csv(tmp_path / "clean" / "LH MP3" / "Existing.csv")
+    assert existing_rows == [{"title": "Keep", "filename": "Keep.mp3", "tag": "Upbeat"}]
+    assert not (tmp_path / "clean" / "LH MP3" / "_unmatched.csv").exists()
+    assert not (tmp_path / "clean" / "LH MP3" / "Empty.csv").exists()

@@ -83,6 +83,40 @@ def group_name_from_file_path(file_path: str, media_prefixes: tuple[str, ...], g
     return parts[0]
 
 
+def relative_media_path(file_path: str, media_prefixes: tuple[str, ...]) -> Path | None:
+    normalized = clean_value(file_path).replace("\\", "/").strip()
+    if not normalized:
+        return None
+
+    stripped = normalized.strip("/")
+    lowered = f"/{stripped.casefold()}"
+    for prefix in media_prefixes:
+        prefix_key = f"/{prefix.strip('/').casefold().rstrip('/')}/"
+        if lowered.startswith(prefix_key):
+            stripped = stripped[len(prefix.strip("/")) + 1 :]
+            return Path(*[part for part in stripped.split("/") if part])
+
+    raw_path = Path(normalized)
+    if not raw_path.is_absolute() and raw_path.parent != Path("."):
+        return raw_path
+    return None
+
+
+def media_file_exists(file_path: str, media_prefixes: tuple[str, ...], media_roots: tuple[Path, ...]) -> bool:
+    if not media_roots:
+        return True
+
+    relative_path = relative_media_path(file_path, media_prefixes)
+    if relative_path:
+        return any((root / relative_path).is_file() for root in media_roots)
+
+    raw_path = Path(clean_value(file_path))
+    if raw_path.is_absolute():
+        return raw_path.is_file()
+
+    return any((root / raw_path).is_file() for root in media_roots)
+
+
 @dataclass(frozen=True)
 class CsvPair:
     source_path: Path
@@ -127,12 +161,17 @@ def build_group_index(
     *,
     media_prefixes: tuple[str, ...],
     group_by: str,
-) -> dict[str, deque[str]]:
+    media_roots: tuple[Path, ...] = (),
+) -> tuple[dict[str, deque[str]], int]:
     header_map = {normalize_header(header): header for header in source_headers}
     groups_by_filename: dict[str, deque[str]] = defaultdict(deque)
+    skipped_missing_media = 0
 
     for row in source_rows:
         file_path = row_value(row, header_map, "file_path", "path")
+        if media_roots and not media_file_exists(file_path, media_prefixes, media_roots):
+            skipped_missing_media += 1
+            continue
         filename = row_value(row, header_map, "filename") or basename_from_value(file_path)
         filename_key = duplicate_filename_key(filename)
         if not filename_key:
@@ -140,13 +179,15 @@ def build_group_index(
         group_name = group_name_from_file_path(file_path, media_prefixes, group_by)
         groups_by_filename[filename_key].append(group_name)
 
-    return groups_by_filename
+    return groups_by_filename, skipped_missing_media
 
 
 def split_tagged_rows(
     tagged_rows: list[dict[str, str]],
     tagged_headers: list[str],
     group_index: dict[str, deque[str]],
+    *,
+    include_unmatched: bool = True,
 ) -> tuple[dict[str, list[dict[str, str]]], int]:
     header_map = {normalize_header(header): header for header in tagged_headers}
     rows_by_group: dict[str, list[dict[str, str]]] = defaultdict(list)
@@ -161,6 +202,9 @@ def split_tagged_rows(
             if len(group_queue) > 1:
                 group_queue.rotate(-1)
         else:
+            if not include_unmatched:
+                unmatched_rows += 1
+                continue
             group_name = UNMATCHED_GROUP
             unmatched_rows += 1
         rows_by_group[group_name].append(row)
@@ -200,6 +244,7 @@ def split_pair(
     output_root: Path,
     media_prefixes: tuple[str, ...],
     group_by: str,
+    media_roots: tuple[Path, ...] = (),
     overwrite: bool,
 ) -> tuple[int, int, int]:
     if not pair.source_path.exists():
@@ -209,15 +254,30 @@ def split_pair(
 
     source_headers, source_rows = read_csv(pair.source_path)
     tagged_headers, tagged_rows = read_csv(pair.tagged_path)
-    group_index = build_group_index(source_rows, source_headers, media_prefixes=media_prefixes, group_by=group_by)
-    rows_by_group, unmatched_rows = split_tagged_rows(tagged_rows, tagged_headers, group_index)
+    existing_media_roots = tuple(root for root in media_roots if root.exists())
+    group_index, skipped_missing_media = build_group_index(
+        source_rows,
+        source_headers,
+        media_prefixes=media_prefixes,
+        media_roots=existing_media_roots,
+        group_by=group_by,
+    )
+    rows_by_group, unmatched_rows = split_tagged_rows(
+        tagged_rows,
+        tagged_headers,
+        group_index,
+        include_unmatched=not existing_media_roots,
+    )
 
     pair_output_dir = output_root / pair.source_path.stem
     for group_name, rows in sorted(rows_by_group.items(), key=lambda item: safe_csv_name(item[0]).casefold()):
         output_path = pair_output_dir / f"{safe_csv_name(group_name)}.csv"
         write_csv_atomic(output_path, tagged_headers, rows, overwrite=overwrite)
 
-    return len(tagged_rows), len(rows_by_group), unmatched_rows
+    written_rows = sum(len(rows) for rows in rows_by_group.values())
+    if skipped_missing_media:
+        print(f"skipped source rows with missing media: {skipped_missing_media}")
+    return written_rows, len(rows_by_group), unmatched_rows
 
 
 def parse_args() -> argparse.Namespace:
@@ -254,6 +314,12 @@ def parse_args() -> argparse.Namespace:
         help="Prefix to strip from file_path before reading folder names. Can be passed multiple times.",
     )
     parser.add_argument(
+        "--media-root",
+        action="append",
+        default=[],
+        help="Mounted folder containing media files. When passed, only existing file_path rows are split.",
+    )
+    parser.add_argument(
         "--group-by",
         choices=("top", "parent"),
         default="top",
@@ -273,6 +339,7 @@ def main() -> int:
     tagged_path = Path(args.with_tag) if args.with_tag else None
     output_root = Path(args.output_dir)
     media_prefixes = tuple(args.media_prefix or DEFAULT_MEDIA_PREFIXES)
+    media_roots = tuple(Path(root) for root in args.media_root)
 
     if tagged_path and input_path.is_dir():
         print("--with-tag can only be used when --input is one CSV file")
@@ -290,6 +357,7 @@ def main() -> int:
                 pair,
                 output_root=output_root,
                 media_prefixes=media_prefixes,
+                media_roots=media_roots,
                 group_by=args.group_by,
                 overwrite=args.overwrite,
             )
