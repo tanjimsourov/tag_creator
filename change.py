@@ -1520,6 +1520,7 @@ def upgrade_csv(
         unresolved: list[str] = []
         removed: list[str] = []
         duplicate_rows = len(source_rows) - len(grouped_source_rows)
+        missing_media_rows = 0
         fsync_every_rows = max(1, int(os.getenv("CSV_FSYNC_EVERY_ROWS", "25")))
         print(f"streaming output: {output_path}")
         with output_path.open("w", newline="", encoding="utf-8-sig") as target_file:
@@ -1543,6 +1544,14 @@ def upgrade_csv(
                         )
                         if current_name:
                             progress.set_postfix_str(clean_value(current_name)[:45], refresh=False)
+                        if duration_resolver.has_media_roots() and not duration_resolver.resolve_media_path(
+                            row,
+                            normalized_headers,
+                            csv_context,
+                        ):
+                            missing_media_rows += 1
+                            progress.update(1)
+                            continue
                         output_row = build_output_row(
                             row,
                             normalized_headers,
@@ -1555,6 +1564,8 @@ def upgrade_csv(
                         candidates.append((output_row_quality_score(output_row), -source_index, output_row))
                         progress.update(1)
 
+                    if not candidates:
+                        continue
                     output_row = max(candidates, key=lambda candidate: (candidate[0], candidate[1]))[2]
                     identity = output_identity_key(output_row)
                     if identity in seen_output_rows:
@@ -1582,9 +1593,10 @@ def upgrade_csv(
                         tagged_rows += 1
             os.fsync(target_file.fileno())
 
-        if duplicate_rows or removed:
+        if duplicate_rows or removed or missing_media_rows:
             print(
                 f"cleaning complete: duplicate_filename_rows_removed={duplicate_rows}, "
+                f"missing_media_rows_skipped={missing_media_rows}, "
                 f"unresolved_or_incomplete_rows_removed={len(removed)}"
             )
         if unresolved:
