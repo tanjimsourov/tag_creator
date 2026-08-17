@@ -788,6 +788,14 @@ class MediaDurationResolver:
         raw_file_path = row_value(row, header_map, "file_path", "path")
         filename = row_value(row, header_map, "filename")
         raw_path = Path(raw_file_path) if raw_file_path else None
+        exact_relative_path = self._exact_relative_path(raw_file_path)
+        if exact_relative_path:
+            for root in self.media_roots:
+                candidate = root / exact_relative_path
+                if candidate.exists() and candidate.is_file():
+                    return candidate
+            return self._relative_media_index().get(self._index_key(exact_relative_path))
+
         relative_parts = self._relative_candidates(raw_file_path, filename, csv_context)
 
         candidates: list[Path] = []
@@ -829,6 +837,18 @@ class MediaDurationResolver:
             if marker in normalized:
                 tail = normalized.split(marker, 1)[1].strip("/")
                 return Path(*tail.split("/")) if tail else None
+        return None
+
+    @classmethod
+    def _exact_relative_path(cls, raw_file_path: str) -> Path | None:
+        if not raw_file_path:
+            return None
+        stripped = cls._strip_app_mount(raw_file_path)
+        if stripped and stripped.parent != Path("."):
+            return stripped
+        raw_path = Path(raw_file_path)
+        if not raw_path.is_absolute() and raw_path.parent != Path("."):
+            return raw_path
         return None
 
     def _relative_candidates(self, raw_file_path: str, filename: str, csv_context: str) -> list[Path]:
