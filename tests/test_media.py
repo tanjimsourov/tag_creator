@@ -4,7 +4,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tag_creator.media import read_media_file, write_tags
+from tag_creator.media import read_media_file, scan_media_files, write_tags
+
+
+def test_scan_media_files_ignores_normalized_folder(tmp_path):
+    real_file = tmp_path / "Germany Charts 2026" / "Track.mp4"
+    normalized_file = tmp_path / "normalized" / "Track.mp4"
+    real_file.parent.mkdir(parents=True)
+    normalized_file.parent.mkdir(parents=True)
+    real_file.write_bytes(b"mp4")
+    normalized_file.write_bytes(b"mp4")
+
+    assert scan_media_files(tmp_path, [".mp4"]) == [real_file]
 
 
 def test_write_and_read_back_mp3(sample_mp3):

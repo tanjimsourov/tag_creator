@@ -34,6 +34,7 @@ from mutagen.mp4 import MP4, MP4Cover
 from .models import MediaFile
 
 LOGGER = logging.getLogger(__name__)
+DEFAULT_EXCLUDED_DIR_NAMES = {"normalized"}
 
 # field name -> single-valued ID3 text frame class (date/year handled separately)
 _MP3_TEXT_FRAMES = {
@@ -54,10 +55,19 @@ _MP3_TEXT_FRAMES = {
 
 def scan_media_files(input_dir: Path, extensions: list[str], limit: int | None = None) -> list[Path]:
     wanted = {extension.lower() for extension in extensions}
+    excluded_dir_names = {
+        value.strip().casefold()
+        for value in os.getenv("EXCLUDED_MEDIA_DIR_NAMES", "normalized").split(",")
+        if value.strip()
+    } or DEFAULT_EXCLUDED_DIR_NAMES
     files = [
         path
         for path in input_dir.rglob("*")
-        if path.is_file() and path.suffix.lower() in wanted
+        if (
+            path.is_file()
+            and path.suffix.lower() in wanted
+            and not any(part.casefold() in excluded_dir_names for part in path.relative_to(input_dir).parts[:-1])
+        )
     ]
     files.sort()
     return files[:limit] if limit is not None else files
@@ -353,4 +363,3 @@ def _write_mp4(path: Path, fields: dict[str, str], write_cover_art: bool) -> lis
             written.append("cover_art")
     audio.save()
     return sorted(set(written))
-
