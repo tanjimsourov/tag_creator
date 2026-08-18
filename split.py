@@ -55,7 +55,15 @@ def safe_csv_name(value: str) -> str:
     return cleaned or UNMATCHED_GROUP
 
 
-def relative_media_parts(file_path: str, media_prefixes: tuple[str, ...]) -> list[str]:
+def strip_csv_context_parts(parts: list[str], csv_context: str) -> list[str]:
+    if not csv_context or len(parts) <= 1:
+        return parts
+    if clean_value(parts[0]).casefold() != clean_value(csv_context).casefold():
+        return parts
+    return parts[1:]
+
+
+def relative_media_parts(file_path: str, media_prefixes: tuple[str, ...], csv_context: str = "") -> list[str]:
     normalized = clean_value(file_path).replace("\\", "/").strip()
     if not normalized:
         return []
@@ -71,11 +79,16 @@ def relative_media_parts(file_path: str, media_prefixes: tuple[str, ...]) -> lis
     parts = [part for part in stripped.split("/") if part]
     if parts and "." in parts[-1]:
         parts = parts[:-1]
-    return parts
+    return strip_csv_context_parts(parts, csv_context)
 
 
-def group_name_from_file_path(file_path: str, media_prefixes: tuple[str, ...], group_by: str) -> str:
-    parts = relative_media_parts(file_path, media_prefixes)
+def group_name_from_file_path(
+    file_path: str,
+    media_prefixes: tuple[str, ...],
+    group_by: str,
+    csv_context: str = "",
+) -> str:
+    parts = relative_media_parts(file_path, media_prefixes, csv_context)
     if not parts:
         return UNMATCHED_GROUP
     if group_by == "parent":
@@ -102,13 +115,34 @@ def relative_media_path(file_path: str, media_prefixes: tuple[str, ...]) -> Path
     return None
 
 
-def media_file_exists(file_path: str, media_prefixes: tuple[str, ...], media_roots: tuple[Path, ...]) -> bool:
+def relative_media_path_candidates(
+    file_path: str,
+    media_prefixes: tuple[str, ...],
+    csv_context: str = "",
+) -> list[Path]:
+    relative_path = relative_media_path(file_path, media_prefixes)
+    if not relative_path:
+        return []
+
+    candidates = [relative_path]
+    stripped_parts = strip_csv_context_parts(list(relative_path.parts), csv_context)
+    if stripped_parts != list(relative_path.parts):
+        candidates.append(Path(*stripped_parts))
+    return candidates
+
+
+def media_file_exists(
+    file_path: str,
+    media_prefixes: tuple[str, ...],
+    media_roots: tuple[Path, ...],
+    csv_context: str = "",
+) -> bool:
     if not media_roots:
         return True
 
-    relative_path = relative_media_path(file_path, media_prefixes)
-    if relative_path:
-        return any((root / relative_path).is_file() for root in media_roots)
+    relative_paths = relative_media_path_candidates(file_path, media_prefixes, csv_context)
+    if relative_paths:
+        return any((root / relative_path).is_file() for relative_path in relative_paths for root in media_roots)
 
     raw_path = Path(clean_value(file_path))
     if raw_path.is_absolute():
@@ -162,6 +196,7 @@ def build_group_index(
     media_prefixes: tuple[str, ...],
     group_by: str,
     media_roots: tuple[Path, ...] = (),
+    csv_context: str = "",
 ) -> tuple[dict[str, deque[str]], int]:
     header_map = {normalize_header(header): header for header in source_headers}
     groups_by_filename: dict[str, deque[str]] = defaultdict(deque)
@@ -169,14 +204,14 @@ def build_group_index(
 
     for row in source_rows:
         file_path = row_value(row, header_map, "file_path", "path")
-        if media_roots and not media_file_exists(file_path, media_prefixes, media_roots):
+        if media_roots and not media_file_exists(file_path, media_prefixes, media_roots, csv_context):
             skipped_missing_media += 1
             continue
         filename = row_value(row, header_map, "filename") or basename_from_value(file_path)
         filename_key = duplicate_filename_key(filename)
         if not filename_key:
             continue
-        group_name = group_name_from_file_path(file_path, media_prefixes, group_by)
+        group_name = group_name_from_file_path(file_path, media_prefixes, group_by, csv_context)
         groups_by_filename[filename_key].append(group_name)
 
     return groups_by_filename, skipped_missing_media
@@ -273,6 +308,7 @@ def split_pair(
         media_prefixes=media_prefixes,
         media_roots=existing_media_roots,
         group_by=group_by,
+        csv_context=pair.source_path.stem,
     )
     rows_by_group, unmatched_rows = split_tagged_rows(
         tagged_rows,

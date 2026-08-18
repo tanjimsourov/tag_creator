@@ -262,6 +262,25 @@ def test_missing_vocal_and_bpm_use_local_ai(tmp_path: Path, monkeypatch) -> None
     assert result["instrumental"] == "1"
 
 
+def test_media_resolver_accepts_csv_context_folder_under_mounted_root(tmp_path: Path) -> None:
+    media_root = tmp_path / "input_media"
+    media = media_root / "Belgium Charts 2026" / "Artist - Song.mp4"
+    media.parent.mkdir(parents=True)
+    media.write_bytes(b"media")
+    row = {
+        "filename": "Artist - Song.mp4",
+        "file_path": "/app/input_media/LH MP4/Belgium Charts 2026/Artist - Song.mp4",
+    }
+
+    resolved = MediaDurationResolver([media_root]).resolve_media_path(
+        row,
+        {"filename": "filename", "file_path": "file_path"},
+        "LH MP4",
+    )
+
+    assert resolved == media
+
+
 def test_strict_cleaning_removes_unmeasured_rows(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("GENRE_API_ENABLED", "false")
     source = tmp_path / "input.csv"
@@ -283,7 +302,7 @@ def test_strict_cleaning_removes_unmeasured_rows(tmp_path: Path, monkeypatch, ca
 
     assert (rows, tagged_rows) == (0, 0)
     assert _read_rows(output) == []
-    assert "unresolved_or_incomplete_rows_removed=1" in capsys.readouterr().out
+    assert "missing_media_rows_skipped=1" in capsys.readouterr().out
 
 
 def test_duplicate_filename_cleaning_keeps_best_complete_row(tmp_path: Path, monkeypatch) -> None:

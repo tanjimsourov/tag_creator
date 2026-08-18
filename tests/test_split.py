@@ -150,3 +150,40 @@ def test_split_pair_with_media_root_skips_rows_without_existing_media(tmp_path: 
     assert existing_rows == [{"title": "Keep", "filename": "Keep.mp3", "tag": "Upbeat"}]
     assert not (tmp_path / "clean" / "LH MP3" / "_unmatched.csv").exists()
     assert not (tmp_path / "clean" / "LH MP3" / "Empty.csv").exists()
+
+
+def test_split_pair_accepts_csv_context_folder_under_mounted_root(tmp_path: Path) -> None:
+    media_root = tmp_path / "media"
+    (media_root / "Belgium Charts 2026").mkdir(parents=True)
+    (media_root / "Belgium Charts 2026" / "Keep.mp4").write_bytes(b"video")
+
+    source = tmp_path / "LH MP4.csv"
+    tagged = tmp_path / "LH MP4_with_tag.csv"
+    write_csv(
+        source,
+        ["filename", "file_path"],
+        [
+            {
+                "filename": "Keep.mp4",
+                "file_path": "/app/input_media/LH MP4/Belgium Charts 2026/Keep.mp4",
+            }
+        ],
+    )
+    write_csv(
+        tagged,
+        ["title", "filename", "tag"],
+        [{"title": "Keep", "filename": "Keep.mp4", "tag": "Upbeat"}],
+    )
+
+    rows, group_count, unmatched = split_pair(
+        CsvPair(source, tagged),
+        output_root=tmp_path / "clean",
+        media_prefixes=("/app/input_media",),
+        group_by="top",
+        media_roots=(media_root,),
+        overwrite=True,
+    )
+
+    assert (rows, group_count, unmatched) == (1, 1, 0)
+    _headers, rows = read_csv(tmp_path / "clean" / "LH MP4" / "Belgium Charts 2026.csv")
+    assert rows == [{"title": "Keep", "filename": "Keep.mp4", "tag": "Upbeat"}]

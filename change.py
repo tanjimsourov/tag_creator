@@ -788,7 +788,9 @@ class MediaDurationResolver:
         raw_file_path = row_value(row, header_map, "file_path", "path")
         filename = row_value(row, header_map, "filename")
         if raw_file_path:
-            return self._resolve_declared_file_path(raw_file_path)
+            declared_path = self._resolve_declared_file_path(raw_file_path, csv_context)
+            if declared_path:
+                return declared_path
 
         raw_path = Path(raw_file_path) if raw_file_path else None
         relative_parts = self._relative_candidates(raw_file_path, filename, csv_context)
@@ -834,23 +836,45 @@ class MediaDurationResolver:
                 return Path(*tail.split("/")) if tail else None
         return None
 
-    def _resolve_declared_file_path(self, raw_file_path: str) -> Path | None:
+    @staticmethod
+    def _context_stripped_relative_path(relative_path: Path, csv_context: str) -> Path | None:
+        if not csv_context:
+            return None
+        parts = relative_path.parts
+        if len(parts) <= 1:
+            return None
+        if clean_value(parts[0]).casefold() != clean_value(csv_context).casefold():
+            return None
+        return Path(*parts[1:])
+
+    def _relative_path_candidates(self, relative_path: Path, csv_context: str = "") -> list[Path]:
+        candidates = [relative_path]
+        stripped = self._context_stripped_relative_path(relative_path, csv_context)
+        if stripped:
+            candidates.append(stripped)
+        return candidates
+
+    def _resolve_declared_file_path(self, raw_file_path: str, csv_context: str = "") -> Path | None:
         declared = self._declared_relative_path(raw_file_path)
         if declared:
-            return self._resolve_relative_media_path(declared)
+            return self._resolve_relative_media_path(declared, csv_context)
 
         raw_path = Path(raw_file_path)
         if raw_path.is_absolute():
             return raw_path if raw_path.exists() and raw_path.is_file() else None
 
-        return self._resolve_relative_media_path(raw_path)
+        return self._resolve_relative_media_path(raw_path, csv_context)
 
-    def _resolve_relative_media_path(self, relative_path: Path) -> Path | None:
-        for root in self.media_roots:
-            candidate = root / relative_path
-            if candidate.exists() and candidate.is_file():
-                return candidate
-        return self._relative_media_index().get(self._index_key(relative_path))
+    def _resolve_relative_media_path(self, relative_path: Path, csv_context: str = "") -> Path | None:
+        for candidate_relative in self._relative_path_candidates(relative_path, csv_context):
+            for root in self.media_roots:
+                candidate = root / candidate_relative
+                if candidate.exists() and candidate.is_file():
+                    return candidate
+            match = self._relative_media_index().get(self._index_key(candidate_relative))
+            if match:
+                return match
+        return None
 
     @classmethod
     def _declared_relative_path(cls, raw_file_path: str) -> Path | None:
@@ -869,7 +893,7 @@ class MediaDurationResolver:
         if raw_file_path:
             stripped = self._strip_app_mount(raw_file_path)
             if stripped:
-                candidates.append(stripped)
+                candidates.extend(self._relative_path_candidates(stripped, csv_context))
                 if csv_context and stripped.name == str(stripped):
                     candidates.append(Path(csv_context) / stripped.name)
         if filename and csv_context:
