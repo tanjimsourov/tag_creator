@@ -115,6 +115,137 @@ cd D:\editorBackend\tag_creator
 docker build --build-arg INSTALL_LOCAL_AI=true -t tag_creator:local-ai .
 ```
 
+### Detect New Uploads And Clean Filenames
+
+Before the AI scanner, run `scripts/prepare_uploads.py` to track uploaded files
+in a local manifest and clean filenames only for new files. The script defaults
+to dry-run mode; add `--apply` only when the preview looks right.
+
+Seed the manifest once so current/existing files are not renamed:
+
+```powershell
+$ROOT = (Get-Location).Path
+$INPUT_DIR = "D:\Application\Website\ftpPrivate\LH MP4"
+
+docker run --rm --user root --entrypoint python `
+  --env-file .env `
+  -v "${ROOT}\scripts\prepare_uploads.py:/app/scripts/prepare_uploads.py:ro" `
+  -v "${ROOT}\tag_creator:/app/tag_creator:ro" `
+  -v "${ROOT}\data:/app/data" `
+  -v "${INPUT_DIR}:/app/input_media" `
+  tag_creator:local-ai scripts/prepare_uploads.py `
+  --input-dir /app/input_media `
+  --manifest /app/data/upload_manifest.json `
+  --mark-existing `
+  --apply
+```
+
+For later uploads, process only new files and rename them in place. Generic
+download IDs such as `238500.mp3` are renamed from embedded media tags when
+both artist and title are available:
+
+```powershell
+$ROOT = (Get-Location).Path
+$INPUT_DIR = "D:\Application\Website\ftpPrivate\LH MP4"
+
+docker run --rm --user root --entrypoint python `
+  --env-file .env `
+  -v "${ROOT}\scripts\prepare_uploads.py:/app/scripts/prepare_uploads.py:ro" `
+  -v "${ROOT}\tag_creator:/app/tag_creator:ro" `
+  -v "${ROOT}\data:/app/data" `
+  -v "${INPUT_DIR}:/app/input_media" `
+  tag_creator:local-ai scripts/prepare_uploads.py `
+  --input-dir /app/input_media `
+  --manifest /app/data/upload_manifest.json `
+  --apply
+```
+
+If you already seeded the manifest and now want those known files renamed in
+place too, add `--rename-known`:
+
+```powershell
+$ROOT = (Get-Location).Path
+$INPUT_DIR = "D:\Application\Website\ftpPrivate\LH MP3"
+
+docker run --rm --user root --entrypoint python `
+  --env-file .env `
+  -v "${ROOT}\scripts\prepare_uploads.py:/app/scripts/prepare_uploads.py:ro" `
+  -v "${ROOT}\tag_creator:/app/tag_creator:ro" `
+  -v "${ROOT}\data:/app/data" `
+  -v "${INPUT_DIR}:/app/input_media" `
+  tag_creator:local-ai scripts/prepare_uploads.py `
+  --input-dir /app/input_media `
+  --manifest /app/data/upload_manifest.json `
+  --rename-known `
+  --apply `
+  --show-files
+```
+
+Configure dynamic paths in `.env` when preferred:
+
+```text
+UPLOAD_INPUT_DIRS=/app/input_media
+UPLOAD_MANIFEST=data/upload_manifest.json
+EXCLUDED_MEDIA_DIR_NAMES=normalized
+CLEAN_DIR=clean
+PIPELINE_INPUT_NAME=LH MP3
+PIPELINE_LOCK_DIR=data/clean_pipeline.lock
+```
+
+### Run The New-Only Clean Pipeline
+
+`scripts/run_clean_pipeline.py` connects the existing steps together:
+
+1. Detect new files and rename generic IDs such as `238500.mp3` in place.
+2. Create the main final CSV.
+3. Run `change.py` to create `_with_tag.csv`.
+4. Run `split.py` into a dated clean folder.
+
+Each run writes intermediate CSVs under `output\YYYY-MM-DD` and final split CSVs
+under `clean\YYYY-MM-DD\<name>`. For Docker, pass `--name` because the mounted
+folder is called `/app/input_media` inside the container.
+
+```powershell
+cd D:\editorBackend\tag_creator
+
+$ROOT = (Get-Location).Path
+$INPUT_DIR = "D:\Application\Website\ftpPrivate\LH MP3"
+$INPUT_NAME = Split-Path -Leaf $INPUT_DIR
+
+docker run --rm --user root --cpus=4 --entrypoint python --env-file .env `
+  --env INPUT_DIR=/app/input_media `
+  --env OUTPUT_DIR=/app/output `
+  --env DATA_DIR=/app/data `
+  --env CLEAN_DIR=/app/clean `
+  --env LOCAL_AI_MODELS_DIR=/app/models/local_ai `
+  --env WORKER_THREADS=3 `
+  --env TF_CPP_MIN_LOG_LEVEL=2 `
+  --env CUDA_VISIBLE_DEVICES=-1 `
+  --tmpfs /app/logs `
+  -v "${ROOT}\scripts:/app/scripts:ro" `
+  -v "${ROOT}\tag_creator:/app/tag_creator:ro" `
+  -v "${ROOT}\change.py:/app/change.py:ro" `
+  -v "${ROOT}\split.py:/app/split.py:ro" `
+  -v "${ROOT}\output:/app/output" `
+  -v "${ROOT}\clean:/app/clean" `
+  -v "${ROOT}\data:/app/data" `
+  -v "${INPUT_DIR}:/app/input_media" `
+  -v "D:\editorBackend\tag_ai:/app/models/local_ai:ro" `
+  tag_creator:local-ai scripts/run_clean_pipeline.py `
+  --input-dir /app/input_media `
+  --name "$INPUT_NAME" `
+  --manifest /app/data/upload_manifest.json `
+  --no-debug-output
+```
+
+To keep it running every 24 hours, add `--loop`. If a run is still active, the
+lock waits and starts the next run after the active one finishes.
+
+```powershell
+  --loop `
+  --interval-hours 24
+```
+
 After that, update `.env` only. `INPUT_DIR` is the host folder that contains MP3/MP4 files:
 
 ```text

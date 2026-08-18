@@ -60,6 +60,37 @@ def test_enrich_library_writes_report_and_summary(tmp_path, make_settings, mp3_f
     assert run_summary["total_files"] == 3
 
 
+def test_enrich_library_can_process_selected_input_paths(
+    tmp_path,
+    make_settings,
+    mp3_factory,
+    fake_provider_cls,
+    monkeypatch,
+):
+    media_dir = _seed_media_dir(mp3_factory, tmp_path, 3)
+    selected = [media_dir / "track_1.mp3", media_dir / "track_2.mp3"]
+    settings = make_settings(input_dir=media_dir, resume=False)
+    fake_map = {"free": fake_provider_cls("free", {"title": "T", "artist": "A"})}
+    monkeypatch.setattr(pipeline, "build_provider_client_map", lambda *a, **k: fake_map)
+
+    store = CsvStore(settings.data_dir)
+    try:
+        summary = enrich_library(
+            settings,
+            store,
+            input_dir=media_dir,
+            report_csv=settings.report_csv,
+            input_paths=selected,
+        )
+    finally:
+        store.close()
+
+    rows = list(csv.DictReader(settings.report_csv.open(encoding="utf-8-sig")))
+    assert summary.total_files == 2
+    assert summary.written_rows == 2
+    assert {Path(row["file_path"]).name for row in rows} == {"track_1.mp3", "track_2.mp3"}
+
+
 def test_resume_skips_already_processed_files(tmp_path, make_settings, mp3_factory, fake_provider_cls, monkeypatch):
     media_dir = _seed_media_dir(mp3_factory, tmp_path, 3)
     settings = make_settings(input_dir=media_dir, resume=True)

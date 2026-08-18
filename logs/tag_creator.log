@@ -63,3 +63,5 @@ FileNotFoundError: [WinError 2] The system cannot find the file specified
 22:57:05 INFO [796dc92c] tag_creator.tag_creator.pipeline: enriching 1 files with 1 worker(s)
 22:58:13 INFO [796dc92c] tag_creator.tag_creator.csv_store: compacted media_inventory.csv: 11 rows -> 7 unique
 22:58:13 INFO [796dc92c] tag_creator.tag_creator.csv_store: compacted enrichment_state.csv: 11 rows -> 7 unique
+16:05:08 INFO [0868f9f0] tag_creator.pipeline: enriching 1 files with 6 worker(s)
+16:05:15 WARNING [0868f9f0] tag_creator.clients.base: musicbrainz returned 503; retrying

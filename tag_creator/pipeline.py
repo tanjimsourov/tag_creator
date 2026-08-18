@@ -251,10 +251,27 @@ def enrich_one(
     )
 
 
-def scan_library(settings: Settings, store: CsvStore, input_dir: Path | None = None, limit: int | None = None) -> list[MediaFile]:
+def scan_library(
+    settings: Settings,
+    store: CsvStore,
+    input_dir: Path | None = None,
+    limit: int | None = None,
+    input_paths: list[Path] | None = None,
+) -> list[MediaFile]:
     selected_input = input_dir or settings.input_dir
     selected_limit = settings.limit if limit is None else limit
-    paths = scan_media_files(selected_input, settings.supported_extensions, selected_limit)
+    if input_paths is None:
+        paths = scan_media_files(selected_input, settings.supported_extensions, selected_limit)
+    else:
+        wanted = {extension.lower() for extension in settings.supported_extensions}
+        paths = [
+            path
+            for path in input_paths
+            if path.is_file() and path.suffix.lower() in wanted
+        ]
+        paths.sort()
+        if selected_limit is not None:
+            paths = paths[:selected_limit]
     media_files: list[MediaFile] = []
     for path in tqdm(paths, desc="Scanning media"):
         try:
@@ -307,6 +324,7 @@ def enrich_library(
     limit: int | None = None,
     final_csv: bool = False,
     debug_output: bool = True,
+    input_paths: list[Path] | None = None,
 ) -> RunSummary:
     settings.output_dir.mkdir(parents=True, exist_ok=True)
     started = time.monotonic()
@@ -324,7 +342,7 @@ def enrich_library(
     )
     try:
         client_map = build_provider_client_map(settings, store, RateLimiter(settings.rate_limits))
-        media_files = scan_library(settings, store, input_dir=input_dir, limit=limit)
+        media_files = scan_library(settings, store, input_dir=input_dir, limit=limit, input_paths=input_paths)
     except Exception:
         writer.close()
         raise
