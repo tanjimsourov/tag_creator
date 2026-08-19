@@ -57,13 +57,61 @@ def test_split_pair_writes_top_level_folder_csvs_with_tagged_rows(tmp_path: Path
     )
 
     assert (rows, group_count, unmatched) == (2, 2, 0)
-    headers, dk_rows = read_csv(output_root / "Local Hero MP4" / "DK Rap.csv")
+    headers, dk_rows = read_csv(output_root / "Local Hero MP4" / "DK Rap.xls")
     assert headers == tagged_headers
     assert dk_rows == [
         {"title": "Track One", "artist": "Artist", "filename": "Track One.mp4", "genre": "Pop", "tag": "Upbeat"}
     ]
-    _headers, pop_rows = read_csv(output_root / "Local Hero MP4" / "Pop (All times).csv")
+    _headers, pop_rows = read_csv(output_root / "Local Hero MP4" / "Pop (All times).xls")
     assert pop_rows[0]["filename"] == "Track Two.mp4"
+
+
+def test_split_pair_groups_root_level_media_by_source_name(tmp_path: Path) -> None:
+    source = tmp_path / "Bowlnfun Sing King Karaoke.csv"
+    tagged = tmp_path / "Bowlnfun Sing King Karaoke_with_tag.xls"
+    output_root = tmp_path / "clean"
+    write_csv(
+        source,
+        ["filename", "file_path"],
+        [
+            {
+                "filename": "2step - Ed Sheeran feat. Lil Baby (Karaoke).mp4",
+                "file_path": "/app/input_media/2step - Ed Sheeran feat. Lil Baby (Karaoke).mp4",
+            },
+            {
+                "filename": "Christmas Song.mp4",
+                "file_path": "/app/input_media/Sing King Christian & Christmas/Christmas Song.mp4",
+            },
+        ],
+    )
+    write_csv(
+        tagged,
+        ["title", "filename", "tag"],
+        [
+            {
+                "title": "2step",
+                "filename": "2step - Ed Sheeran feat. Lil Baby (Karaoke).mp4",
+                "tag": "Karaoke",
+            },
+            {"title": "Christmas Song", "filename": "Christmas Song.mp4", "tag": "Christmas"},
+        ],
+    )
+
+    rows, group_count, unmatched = split_pair(
+        CsvPair(source, tagged),
+        output_root=output_root,
+        media_prefixes=("/app/input_media",),
+        group_by="top",
+        overwrite=True,
+    )
+
+    assert (rows, group_count, unmatched) == (2, 2, 0)
+    _headers, root_rows = read_csv(output_root / "Bowlnfun Sing King Karaoke" / "Bowlnfun Sing King Karaoke.xls")
+    assert root_rows[0]["filename"] == "2step - Ed Sheeran feat. Lil Baby (Karaoke).mp4"
+    _headers, christmas_rows = read_csv(
+        output_root / "Bowlnfun Sing King Karaoke" / "Sing King Christian & Christmas.xls"
+    )
+    assert christmas_rows[0]["filename"] == "Christmas Song.mp4"
 
 
 def test_split_pair_can_group_by_immediate_parent_folder(tmp_path: Path) -> None:
@@ -88,7 +136,7 @@ def test_split_pair_can_group_by_immediate_parent_folder(tmp_path: Path) -> None
         overwrite=True,
     )
 
-    assert (tmp_path / "clean" / "input" / "DK Rap.csv").exists()
+    assert (tmp_path / "clean" / "input" / "DK Rap.xls").exists()
 
 
 def test_split_pair_keeps_unmatched_rows_in_unmatched_csv(tmp_path: Path) -> None:
@@ -106,7 +154,7 @@ def test_split_pair_keeps_unmatched_rows_in_unmatched_csv(tmp_path: Path) -> Non
     )
 
     assert (rows, group_count, unmatched) == (1, 1, 1)
-    _headers, unmatched_rows = read_csv(tmp_path / "clean" / "input" / "_unmatched.csv")
+    _headers, unmatched_rows = read_csv(tmp_path / "clean" / "input" / "_unmatched.xls")
     assert unmatched_rows[0]["filename"] == "missing.mp4"
 
 
@@ -146,9 +194,9 @@ def test_split_pair_with_media_root_skips_rows_without_existing_media(tmp_path: 
     )
 
     assert (rows, group_count, unmatched) == (1, 1, 1)
-    _headers, existing_rows = read_csv(tmp_path / "clean" / "LH MP3" / "Existing.csv")
+    _headers, existing_rows = read_csv(tmp_path / "clean" / "LH MP3" / "Existing.xls")
     assert existing_rows == [{"title": "Keep", "filename": "Keep.mp3", "tag": "Upbeat"}]
-    assert not (tmp_path / "clean" / "LH MP3" / "_unmatched.csv").exists()
+    assert not (tmp_path / "clean" / "LH MP3" / "_unmatched.xls").exists()
     assert not (tmp_path / "clean" / "LH MP3" / "Empty.csv").exists()
 
 
@@ -185,5 +233,27 @@ def test_split_pair_accepts_csv_context_folder_under_mounted_root(tmp_path: Path
     )
 
     assert (rows, group_count, unmatched) == (1, 1, 0)
-    _headers, rows = read_csv(tmp_path / "clean" / "LH MP4" / "Belgium Charts 2026.csv")
+    _headers, rows = read_csv(tmp_path / "clean" / "LH MP4" / "Belgium Charts 2026.xls")
     assert rows == [{"title": "Keep", "filename": "Keep.mp4", "tag": "Upbeat"}]
+
+
+def test_split_pair_can_write_legacy_csv_when_requested(tmp_path: Path) -> None:
+    source = tmp_path / "input.csv"
+    tagged = tmp_path / "input_with_tag.xls"
+    write_csv(
+        source,
+        ["filename", "file_path"],
+        [{"filename": "Track One.mp4", "file_path": "/app/input_media/DK Pop/Track One.mp4"}],
+    )
+    write_csv(tagged, ["title", "filename", "tag"], [{"title": "Track One", "filename": "Track One.mp4", "tag": "Upbeat"}])
+
+    split_pair(
+        CsvPair(source, tagged),
+        output_root=tmp_path / "clean",
+        media_prefixes=("/app/input_media",),
+        group_by="top",
+        output_extension=".csv",
+        overwrite=True,
+    )
+
+    assert (tmp_path / "clean" / "input" / "DK Pop.csv").exists()

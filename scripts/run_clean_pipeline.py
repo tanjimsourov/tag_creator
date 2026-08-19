@@ -27,6 +27,7 @@ from tag_creator.upload_manifest import (
     parse_excluded_dir_names,
     parse_extensions,
     prepare_uploads,
+    scan_media_files,
 )
 
 
@@ -103,6 +104,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lock-wait-seconds", type=int, default=60)
     parser.add_argument("--mark-existing", action="store_true", help="Only mark current files as already seen, then stop.")
     parser.add_argument("--rename-known", action="store_true", help="Also rename already-manifested files.")
+    parser.add_argument(
+        "--skip-rename",
+        action="store_true",
+        help="Do not clean or rename media filenames; process scanned files as they are.",
+    )
     parser.add_argument("--allow-unresolved-facts", action="store_true", help="Pass through to change.py.")
     parser.add_argument("--group-by", choices=("top", "parent"), default="top")
     parser.add_argument("--no-debug-output", action="store_true", help="Do not write JSONL/run summary side files.")
@@ -136,7 +142,9 @@ def run_once(args: argparse.Namespace) -> None:
     dated_output = output_root / run_date
     dated_clean = clean_root / run_date
     source_csv = dated_output / f"{input_name}.csv"
-    tagged_csv = dated_output / f"{input_name}_with_tag.csv"
+    tagged_csv = dated_output / f"{input_name}_with_tag.xls"
+    dated_output.mkdir(parents=True, exist_ok=True)
+    dated_clean.mkdir(parents=True, exist_ok=True)
 
     extensions = parse_extensions(
         os.getenv("SUPPORTED_EXTENSIONS", "")
@@ -144,28 +152,35 @@ def run_once(args: argparse.Namespace) -> None:
     )
     excluded = parse_excluded_dir_names(os.getenv("EXCLUDED_MEDIA_DIR_NAMES", "normalized"))
 
-    prepared = prepare_uploads(
-        input_roots,
-        manifest_path=manifest_path,
-        extensions=extensions,
-        excluded_dir_names=excluded,
-        apply=True,
-        mark_existing=args.mark_existing,
-        rename_known=args.rename_known,
-        limit=args.limit,
-    )
-    print(
-        f"prepare uploads complete: scanned={prepared.scanned}, known={prepared.known}, "
-        f"marked_existing={prepared.marked_existing}, planned={prepared.planned}, "
-        f"renamed={prepared.renamed}, unchanged={prepared.unchanged}"
-    )
-    print(f"manifest: {prepared.manifest_path}")
+    if args.skip_rename:
+        scanned = scan_media_files(input_roots, extensions=extensions, excluded_dir_names=excluded)
+        if args.limit is not None:
+            scanned = scanned[: max(0, args.limit)]
+        selected_paths = [path for _root, path in scanned]
+        print(f"skip-rename mode: scanned={len(selected_paths)}, renamed=0, manifest_not_used=true")
+    else:
+        prepared = prepare_uploads(
+            input_roots,
+            manifest_path=manifest_path,
+            extensions=extensions,
+            excluded_dir_names=excluded,
+            apply=True,
+            mark_existing=args.mark_existing,
+            rename_known=args.rename_known,
+            limit=args.limit,
+        )
+        print(
+            f"prepare uploads complete: scanned={prepared.scanned}, known={prepared.known}, "
+            f"marked_existing={prepared.marked_existing}, planned={prepared.planned}, "
+            f"renamed={prepared.renamed}, unchanged={prepared.unchanged}"
+        )
+        print(f"manifest: {prepared.manifest_path}")
 
-    if args.mark_existing:
-        print("mark-existing complete; scanner/change/split were not run.")
-        return
+        if args.mark_existing:
+            print("mark-existing complete; scanner/change/split were not run.")
+            return
 
-    selected_paths = [item.target_path for item in prepared.files]
+        selected_paths = [item.target_path for item in prepared.files]
     if not selected_paths:
         print(f"no new media files found; no CSV output created for {run_date}.")
         return
@@ -206,6 +221,8 @@ def run_once(args: argparse.Namespace) -> None:
         str(source_csv),
         "--media-root",
         str(input_roots[0]),
+        "--output-extension",
+        ".xls",
         "--overwrite",
     ]
     if args.allow_unresolved_facts:
@@ -225,6 +242,8 @@ def run_once(args: argparse.Namespace) -> None:
         str(input_roots[0]),
         "--group-by",
         args.group_by,
+        "--output-extension",
+        ".xls",
         "--overwrite",
     ]
     _run_command(split_command)

@@ -14,6 +14,8 @@ from pathlib import Path
 DEFAULT_INPUT_DIR = Path(os.getenv("OUTPUT_DIR", "output"))
 DEFAULT_OUTPUT_DIR = Path("clean")
 DEFAULT_SUFFIX = "_with_tag"
+DEFAULT_OUTPUT_EXTENSION = ".xls"
+SUPPORTED_TABULAR_EXTENSIONS = {".csv", ".xls"}
 DEFAULT_MEDIA_PREFIXES = ("/app/input_media", "/app/mp3", "/app/mp4", "/app/media")
 UNMATCHED_GROUP = "_unmatched"
 
@@ -90,6 +92,9 @@ def group_name_from_file_path(
 ) -> str:
     parts = relative_media_parts(file_path, media_prefixes, csv_context)
     if not parts:
+        relative_path = relative_media_path(file_path, media_prefixes)
+        if csv_context and relative_path and len(relative_path.parts) == 1 and relative_path.suffix:
+            return csv_context
         return UNMATCHED_GROUP
     if group_by == "parent":
         return parts[-1]
@@ -158,11 +163,36 @@ class CsvPair:
 
 
 def should_skip_source(path: Path, suffix: str) -> bool:
-    return not path.is_file() or path.suffix.lower() != ".csv" or path.stem.lower().endswith(suffix.lower())
+    return (
+        not path.is_file()
+        or path.suffix.lower() not in SUPPORTED_TABULAR_EXTENSIONS
+        or path.stem.lower().endswith(suffix.lower())
+    )
+
+
+def normalize_output_extension(value: str) -> str:
+    cleaned = clean_value(value or DEFAULT_OUTPUT_EXTENSION).lower()
+    if not cleaned:
+        return DEFAULT_OUTPUT_EXTENSION
+    return cleaned if cleaned.startswith(".") else f".{cleaned}"
+
+
+def tagged_path_candidates(source_path: Path, suffix: str) -> list[Path]:
+    preferred = source_path.with_name(f"{source_path.stem}{suffix}{DEFAULT_OUTPUT_EXTENSION}")
+    legacy = source_path.with_name(f"{source_path.stem}{suffix}{source_path.suffix}")
+    csv_legacy = source_path.with_name(f"{source_path.stem}{suffix}.csv")
+    candidates: list[Path] = []
+    for candidate in (preferred, legacy, csv_legacy):
+        if candidate not in candidates:
+            candidates.append(candidate)
+    return candidates
 
 
 def tagged_path_for(source_path: Path, suffix: str) -> Path:
-    return source_path.with_name(f"{source_path.stem}{suffix}{source_path.suffix}")
+    for candidate in tagged_path_candidates(source_path, suffix):
+        if candidate.exists():
+            return candidate
+    return tagged_path_candidates(source_path, suffix)[0]
 
 
 def find_csv_pairs(input_path: Path, tagged_path: Path | None, suffix: str) -> list[CsvPair]:
@@ -172,12 +202,13 @@ def find_csv_pairs(input_path: Path, tagged_path: Path | None, suffix: str) -> l
         return [CsvPair(input_path, tagged_path or tagged_path_for(input_path, suffix))]
 
     pairs: list[CsvPair] = []
-    for source_path in sorted(input_path.glob("*.csv")):
+    for source_path in sorted(input_path.iterdir()):
         if should_skip_source(source_path, suffix):
             continue
-        candidate = tagged_path_for(source_path, suffix)
-        if candidate.exists():
-            pairs.append(CsvPair(source_path, candidate))
+        for candidate in tagged_path_candidates(source_path, suffix):
+            if candidate.exists():
+                pairs.append(CsvPair(source_path, candidate))
+                break
     return pairs
 
 
@@ -273,13 +304,13 @@ def write_csv_atomic(path: Path, fieldnames: list[str], rows: list[dict[str, str
             temporary_path.unlink()
 
 
-def clear_existing_split_csvs(directory: Path) -> int:
+def clear_existing_split_files(directory: Path) -> int:
     if not directory.exists():
         return 0
 
     removed = 0
-    for path in directory.glob("*.csv"):
-        if path.is_file():
+    for path in directory.iterdir():
+        if path.is_file() and path.suffix.lower() in SUPPORTED_TABULAR_EXTENSIONS:
             path.unlink()
             removed += 1
     return removed
@@ -292,7 +323,8 @@ def split_pair(
     media_prefixes: tuple[str, ...],
     group_by: str,
     media_roots: tuple[Path, ...] = (),
-    overwrite: bool,
+    output_extension: str = DEFAULT_OUTPUT_EXTENSION,
+    overwrite: bool = False,
 ) -> tuple[int, int, int]:
     if not pair.source_path.exists():
         raise FileNotFoundError(f"source CSV does not exist: {pair.source_path}")
@@ -318,14 +350,15 @@ def split_pair(
     )
 
     pair_output_dir = output_root / pair.source_path.stem
-    removed_existing_files = clear_existing_split_csvs(pair_output_dir) if overwrite else 0
+    removed_existing_files = clear_existing_split_files(pair_output_dir) if overwrite else 0
+    output_suffix = normalize_output_extension(output_extension)
     for group_name, rows in sorted(rows_by_group.items(), key=lambda item: safe_csv_name(item[0]).casefold()):
-        output_path = pair_output_dir / f"{safe_csv_name(group_name)}.csv"
+        output_path = pair_output_dir / f"{safe_csv_name(group_name)}{output_suffix}"
         write_csv_atomic(output_path, tagged_headers, rows, overwrite=overwrite)
 
     written_rows = sum(len(rows) for rows in rows_by_group.values())
     if removed_existing_files:
-        print(f"removed stale split CSV files: {removed_existing_files}")
+        print(f"removed stale split files: {removed_existing_files}")
     if skipped_missing_media:
         print(f"skipped source rows with missing media: {skipped_missing_media}")
     return written_rows, len(rows_by_group), unmatched_rows
@@ -351,7 +384,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         default=str(DEFAULT_OUTPUT_DIR),
-        help="Directory where split CSVs will be created. Default: clean.",
+        help="Directory where split files will be created. Default: clean.",
+    )
+    parser.add_argument(
+        "--output-extension",
+        default=os.getenv("SPLIT_OUTPUT_EXTENSION", DEFAULT_OUTPUT_EXTENSION),
+        help=f"Extension for split output files. Default: {DEFAULT_OUTPUT_EXTENSION}",
     )
     parser.add_argument(
         "--suffix",
@@ -410,6 +448,7 @@ def main() -> int:
                 media_prefixes=media_prefixes,
                 media_roots=media_roots,
                 group_by=args.group_by,
+                output_extension=args.output_extension,
                 overwrite=args.overwrite,
             )
         except (FileExistsError, FileNotFoundError, ValueError) as exc:
@@ -418,7 +457,7 @@ def main() -> int:
 
         processed += 1
         print(
-            f"created split CSVs: {output_root / pair.source_path.stem} "
+            f"created split files: {output_root / pair.source_path.stem} "
             f"(rows={rows}, files={group_count}, unmatched={unmatched_rows})"
         )
 

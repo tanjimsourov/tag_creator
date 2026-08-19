@@ -38,6 +38,8 @@ OUTPUT_COLUMNS = (
 )
 DEFAULT_INPUT_DIR = Path(os.getenv("OUTPUT_DIR", "output"))
 DEFAULT_SUFFIX = "_with_tag"
+DEFAULT_OUTPUT_EXTENSION = ".xls"
+SUPPORTED_INPUT_EXTENSIONS = {".csv", ".xls"}
 MEDIA_EXTENSIONS = {".mp3", ".mp4", ".m4a", ".aac", ".flac", ".wav", ".wma", ".ogg"}
 DEFAULT_ALBUM = "Single"
 DEFAULT_LABEL = "SMC"
@@ -97,6 +99,36 @@ METADATA_IDENTITY_VALUES = {
     "upbeat",
 }
 
+TITLE_NOISE_PATTERNS = (
+    r"official\s+music\s+video",
+    r"official\s+lyric\s+video",
+    r"official\s+lyrics\s+video",
+    r"official\s+performance\s+video",
+    r"official\s+visuali[sz]er",
+    r"official\s+audio",
+    r"official\s+video",
+    r"offizielles?\s+musikvideo",
+    r"offizielles?\s+video",
+    r"officiel(?:le)?\s+video",
+    r"video\s+oficial",
+    r"music\s+video",
+    r"lyric\s+video",
+    r"lyrics\s+video",
+    r"musikvideo",
+    r"videoclip",
+    r"use\s+headphones",
+    r"3d\s+audio",
+)
+BRACKETED_TITLE_NOISE = re.compile(
+    r"\s*[\[(]\s*(?:" + "|".join(TITLE_NOISE_PATTERNS) + r")\s*[\])]\s*",
+    flags=re.IGNORECASE,
+)
+TRAILING_TITLE_NOISE = re.compile(
+    r"(?:\s*[|]\s*|\s+[-_]\s+|\s+)(?:" + "|".join(TITLE_NOISE_PATTERNS) + r")\s*$",
+    flags=re.IGNORECASE,
+)
+TRAILING_HASHTAGS = re.compile(r"(?:\s+#[\w-]+)+\s*$", flags=re.UNICODE)
+
 
 def normalize_header(value: str) -> str:
     return value.strip().lower().replace(" ", "_")
@@ -133,6 +165,33 @@ def clean_value(value: str) -> str:
             break
         cleaned = best
     return unicodedata.normalize("NFC", cleaned)
+
+
+def remove_icon_characters(value: str) -> str:
+    cleaned = clean_value(value)
+    characters: list[str] = []
+    for character in cleaned:
+        category = unicodedata.category(character)
+        if character in {"\ufe0e", "\ufe0f", "\u200d"}:
+            continue
+        if category in {"So", "Sk", "Cs"}:
+            continue
+        characters.append(character)
+    return clean_value("".join(characters))
+
+
+def clean_title_value(value: str) -> str:
+    cleaned = remove_icon_characters(value)
+    previous = ""
+    while previous != cleaned:
+        previous = cleaned
+        cleaned = BRACKETED_TITLE_NOISE.sub(" ", cleaned)
+        cleaned = TRAILING_HASHTAGS.sub("", cleaned)
+        cleaned = TRAILING_TITLE_NOISE.sub("", cleaned)
+        cleaned = clean_value(cleaned)
+    cleaned = re.sub(r"\s+([)\]])", r"\1", cleaned)
+    cleaned = re.sub(r"([(\[])\s+", r"\1", cleaned)
+    return clean_value(cleaned).strip(" -_|")
 
 
 def normalized_filename_key(value: str) -> str:
@@ -283,6 +342,30 @@ def parse_artist_title_from_filename(filename: str) -> tuple[str, str]:
     return "", ""
 
 
+def parse_artist_title_from_text(value: str) -> tuple[str, str]:
+    cleaned = clean_value(value)
+    if not cleaned:
+        return "", ""
+    for match in re.finditer(r"\s+(?:-|\u2013|\u2014)\s+", cleaned):
+        artist = cleaned[: match.start()]
+        title = cleaned[match.end() :]
+        if clean_value(artist) and clean_value(title):
+            return clean_value(artist), standardize_lyrics_marker(title)
+    return "", ""
+
+
+def title_without_artist_prefix(title: str, *artists: str) -> str:
+    parsed_artist, parsed_title = parse_artist_title_from_text(title)
+    if not parsed_artist or not parsed_title:
+        return title
+
+    parsed_artist_key = canonical_value(parsed_artist)
+    artist_keys = {canonical_value(artist) for artist in artists if artist}
+    if artist_keys and parsed_artist_key not in artist_keys:
+        return title
+    return parsed_title
+
+
 def filename_for_row(row: dict[str, str], header_map: dict[str, str]) -> str:
     return row_value(row, header_map, "filename") or basename_from_value(row_value(row, header_map, "file_path", "path"))
 
@@ -411,14 +494,17 @@ def resolve_title(
     csv_context: str = "",
 ) -> str:
     filename = filename_for_row(row, header_map)
+    row_artist = row_value(row, header_map, "artist")
+    parsed_artist, parsed_title = parse_artist_title_from_filename(filename)
     title = standardize_lyrics_marker(row_value(row, header_map, "title"))
-    _, parsed_title = parse_artist_title_from_filename(filename)
+    title = title_without_artist_prefix(title, row_artist, parsed_artist)
+    title = clean_title_value(title)
     if parsed_title and (
         is_unverified_title(title)
         or has_lyrics_marker(filename, parsed_title)
         or canonical_value(parsed_title).replace(" lyrics", "") == canonical_value(title)
     ):
-        return parsed_title
+        return clean_title_value(parsed_title)
     if not is_unverified_title(title):
         return f"{title} (Lyrics)" if has_lyrics_marker(filename) and "(lyrics)" not in title.lower() else title
     if duration_resolver:
@@ -429,8 +515,8 @@ def resolve_title(
             csv_context,
         )
         if not is_unverified_title(embedded_title):
-            return standardize_lyrics_marker(embedded_title)
-    return fallback_from_filename(filename, "title")
+            return clean_title_value(standardize_lyrics_marker(embedded_title))
+    return clean_title_value(fallback_from_filename(filename, "title"))
 
 
 def build_tag(
@@ -1304,8 +1390,6 @@ def output_row_quality_score(output_row: dict[str, str]) -> int:
     score += 5 if not is_unverified_language(output_row.get("language", "")) else -20
     if time_to_seconds(output_row.get("time", "")) > 0:
         score += 15
-    if output_row.get("isDL") == "1":
-        score += 10
     vocal = output_row.get("vocal", "")
     instrumental = output_row.get("instrumental", "")
     if vocal in {"0", "1"} and instrumental in {"0", "1"} and int(vocal) + int(instrumental) == 1:
@@ -1335,8 +1419,8 @@ def cleaning_issues(output_row: dict[str, str]) -> list[str]:
     """Return the issue iii/iv reasons that require removing a converted row."""
 
     issues: list[str] = []
-    if output_row.get("isDL") != "1" or time_to_seconds(output_row.get("time", "")) <= 0:
-        issues.append("media or duration not resolved")
+    if time_to_seconds(output_row.get("time", "")) <= 0:
+        issues.append("duration not resolved")
 
     if is_unverified_title(output_row.get("title", "")):
         issues.append("title invalid")
@@ -1440,7 +1524,6 @@ def build_output_row(
         instrumental,
         csv_context,
     )
-    existing_isdl = row_value(row, header_map, "isDL", "isdl")
     title = resolve_title(row, header_map, duration_resolver, csv_context)
     artist = resolve_artist(row, header_map, duration_resolver, csv_context)
     genre = resolve_single_genre(row, header_map, resolved_title=title, resolved_artist=artist)
@@ -1474,10 +1557,8 @@ def build_output_row(
         "filename": non_placeholder(row_value(row, header_map, "filename"), basename_from_value(row_value(row, header_map, "file_path", "path"))),
         "year": non_placeholder(row_value(row, header_map, "year"), ""),
         "language": language,
-        "isDL": duration_resolver.is_downloaded(row, header_map, csv_context)
-        if duration_resolver.has_media_roots()
-        else downloaded_flag(existing_isdl),
-        "label": non_placeholder(row_value(row, header_map, "label", "publisher"), DEFAULT_LABEL),
+        "isDL": "0",
+        "label": DEFAULT_LABEL,
         "vocal": vocal_flag,
         "instrumental": instrumental_flag,
         "tag": build_tag(row, header_map, resolved_title=title, resolved_artist=artist, resolved_genre=genre),
@@ -1487,8 +1568,16 @@ def build_output_row(
     return output_row
 
 
-def output_path_for(input_path: Path, suffix: str) -> Path:
-    return input_path.with_name(f"{input_path.stem}{suffix}{input_path.suffix}")
+def normalize_output_extension(value: str) -> str:
+    cleaned = clean_value(value or DEFAULT_OUTPUT_EXTENSION).lower()
+    if not cleaned:
+        return DEFAULT_OUTPUT_EXTENSION
+    return cleaned if cleaned.startswith(".") else f".{cleaned}"
+
+
+def output_path_for(input_path: Path, suffix: str, output_extension: str = DEFAULT_OUTPUT_EXTENSION) -> Path:
+    extension = normalize_output_extension(output_extension)
+    return input_path.with_name(f"{input_path.stem}{suffix}{extension}")
 
 
 def factual_issues(output_row: dict[str, str]) -> list[str]:
@@ -1525,8 +1614,6 @@ def factual_issues(output_row: dict[str, str]) -> list[str]:
     year = output_row.get("year", "")
     if year and (not year.isdigit() or not 1900 <= int(year) <= 2100):
         issues.append("year is invalid")
-    if output_row.get("isDL") != "1":
-        issues.append("media file not resolved")
     if time_to_seconds(output_row.get("time", "")) <= 0:
         issues.append("duration not measured")
     if not MediaDurationResolver._numeric_bpm(output_row.get("tempo", "")):
@@ -1540,7 +1627,7 @@ def factual_issues(output_row: dict[str, str]) -> list[str]:
 
 def should_skip_file(path: Path, suffix: str) -> bool:
     name = path.name.lower()
-    if not path.is_file() or path.suffix.lower() != ".csv":
+    if not path.is_file() or path.suffix.lower() not in SUPPORTED_INPUT_EXTENSIONS:
         return True
     return path.stem.lower().endswith(suffix.lower())
 
@@ -1672,7 +1759,11 @@ def upgrade_csv(
 def find_csv_files(path: Path, suffix: str) -> list[Path]:
     if path.is_file():
         return [] if should_skip_file(path, suffix) else [path]
-    return sorted(candidate for candidate in path.glob("*.csv") if not should_skip_file(candidate, suffix))
+    return sorted(
+        candidate
+        for candidate in path.iterdir()
+        if candidate.suffix.lower() in SUPPORTED_INPUT_EXTENSIONS and not should_skip_file(candidate, suffix)
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -1691,6 +1782,11 @@ def parse_args() -> argparse.Namespace:
         "--suffix",
         default=DEFAULT_SUFFIX,
         help=f"Suffix for copied CSV files. Default: {DEFAULT_SUFFIX}",
+    )
+    parser.add_argument(
+        "--output-extension",
+        default=os.getenv("CHANGE_OUTPUT_EXTENSION", DEFAULT_OUTPUT_EXTENSION),
+        help=f"Extension for copied output files. Default: {DEFAULT_OUTPUT_EXTENSION}",
     )
     parser.add_argument(
         "--overwrite",
@@ -1734,7 +1830,7 @@ def main() -> int:
     )
     processed = 0
     for csv_path in csv_files:
-        output_path = output_path_for(csv_path, args.suffix)
+        output_path = output_path_for(csv_path, args.suffix, args.output_extension)
         if output_path.exists() and not args.overwrite:
             print(f"skip existing copy: {output_path}")
             continue

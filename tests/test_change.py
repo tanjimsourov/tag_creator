@@ -89,6 +89,8 @@ def test_upgrade_applies_portal_rules_and_preserves_source(tmp_path: Path, monke
     assert result[0]["genre"] == "Dance"
     assert result[1]["genre"] == "Dance"
     assert result[0]["time"] == "00:03:16"
+    assert result[0]["isDL"] == "0"
+    assert result[0]["label"] == "SMC"
     assert result[0]["tag"].split(",").count("Upbeat") == 1
     assert "Dance" not in result[0]["tag"].split(",")
 
@@ -172,7 +174,93 @@ def test_complete_source_values_bypass_local_ai_even_with_final_completion_sourc
     assert result["tempo"] == "127"
     assert result["vocal"] == "1"
     assert result["instrumental"] == "0"
-    assert result["isDL"] == "1"
+    assert result["isDL"] == "0"
+    assert result["label"] == "SMC"
+
+
+def test_title_cleanup_removes_artist_prefix_video_noise_and_icons(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("GENRE_API_ENABLED", "false")
+    source = tmp_path / "input.csv"
+    output = tmp_path / "input_with_tag.xls"
+    _write_source(
+        source,
+        [
+            {
+                "title": "PIRIDELMAR - HeartBeat ( Feat TONY T & ALBA KRAS ) ❌ USE HEADPHONES 🎧 | 3D AUDIO",
+                "artist": "PIRIDELMAR",
+                "album": "Single",
+                "genre": "Pop",
+                "subgenre": "Dance-pop",
+                "mood": "Upbeat",
+                "weather": "All Weather",
+                "season": "All Season",
+                "age_group": "General",
+                "filename": "PIRIDELMAR - HeartBeat ( Feat TONY T & ALBA KRAS ).mp3",
+                "year": "2025",
+                "language": "English",
+                "label": "Intersope",
+                "vocal": "1",
+                "instrumental": "0",
+                "duration_seconds": "180",
+                "bpm": "120",
+            },
+            {
+                "title": "FAYAN x Dalton – VERLIEBT IN MICH (Official Video)",
+                "artist": "FAYAN x Dalton",
+                "album": "Single",
+                "genre": "Hip Hop",
+                "subgenre": "Hip Hop",
+                "mood": "Energetic",
+                "weather": "All Weather",
+                "season": "All Season",
+                "age_group": "General",
+                "filename": "FAYAN x Dalton – VERLIEBT IN MICH (Official Video).mp3",
+                "year": "2025",
+                "language": "German",
+                "label": "Island Records",
+                "vocal": "1",
+                "instrumental": "0",
+                "duration_seconds": "180",
+                "bpm": "120",
+            },
+            {
+                "title": "Kato feat. Jon - Turn The Lights Off (Jon Hamm)",
+                "artist": "Kato feat. Jon",
+                "album": "Single",
+                "genre": "Pop",
+                "subgenre": "Dance-pop",
+                "mood": "Energetic",
+                "weather": "All Weather",
+                "season": "All Season",
+                "age_group": "General",
+                "filename": "Kato feat. Jon - Turn The Lights Off (Jon Hamm).mp3",
+                "year": "2025",
+                "language": "English",
+                "label": "Azet & Dara",
+                "vocal": "1",
+                "instrumental": "0",
+                "duration_seconds": "180",
+                "bpm": "120",
+            },
+        ],
+    )
+
+    written, _tagged = upgrade_csv(source, output, MediaDurationResolver([]), strict_facts=True)
+
+    rows = _read_rows(output)
+    assert written == 3
+    assert rows[0]["title"] == "HeartBeat (Feat TONY T & ALBA KRAS)"
+    assert rows[1]["title"] == "VERLIEBT IN MICH"
+    assert rows[2]["title"] == "Turn The Lights Off (Jon Hamm)"
+    assert {row["isDL"] for row in rows} == {"0"}
+    assert {row["label"] for row in rows} == {"SMC"}
+
+
+def test_output_path_defaults_to_xls() -> None:
+    source = Path("LH MP3.csv")
+
+    assert change_module.output_path_for(source, "_with_tag") == Path("LH MP3_with_tag.xls")
+    assert change_module.output_path_for(source, "_with_tag", ".csv") == Path("LH MP3_with_tag.csv")
 
 
 def test_existing_vocal_fallback_is_reverified_from_audio(tmp_path: Path, monkeypatch) -> None:
