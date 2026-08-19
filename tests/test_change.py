@@ -36,7 +36,7 @@ def test_upgrade_applies_portal_rules_and_preserves_source(tmp_path: Path, monke
     source = tmp_path / "input.csv"
     output = tmp_path / "input_with_tag.csv"
     common = {
-        "album": "Single",
+        "album": "Source Album Must Not Be Used",
         "year": "2024",
         "language": "English",
         "label": "SMC",
@@ -85,6 +85,7 @@ def test_upgrade_applies_portal_rules_and_preserves_source(tmp_path: Path, monke
     result = _read_rows(output)
     assert list(result[0]) == list(OUTPUT_COLUMNS)
     assert result[0]["title"] == "Summer's Back (Lyrics)"
+    assert result[0]["album"] == "Single"
     assert result[0]["artist"] == "Alok & Jess Glynne"
     assert result[0]["genre"] == "Dance"
     assert result[1]["genre"] == "Dance"

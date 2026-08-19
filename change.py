@@ -1527,7 +1527,7 @@ def build_output_row(
     title = resolve_title(row, header_map, duration_resolver, csv_context)
     artist = resolve_artist(row, header_map, duration_resolver, csv_context)
     genre = resolve_single_genre(row, header_map, resolved_title=title, resolved_artist=artist)
-    album = non_placeholder(row_value(row, header_map, "album"), DEFAULT_ALBUM)
+    album = DEFAULT_ALBUM
     existing_language = row_value(row, header_map, "language")
     language = (
         language_resolver.resolve(
