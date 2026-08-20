@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import os
 import re
 import subprocess
@@ -43,6 +44,46 @@ SUPPORTED_INPUT_EXTENSIONS = {".csv", ".xls"}
 MEDIA_EXTENSIONS = {".mp3", ".mp4", ".m4a", ".aac", ".flac", ".wav", ".wma", ".ogg"}
 DEFAULT_ALBUM = "Single"
 DEFAULT_LABEL = "SMC"
+
+PROVIDER_ARTIST_COLUMNS = (
+    "verified_artist",
+    "provider_artist",
+    "ai_artist",
+    "musicbrainz_artist",
+    "spotify_artist",
+    "itunes_artist",
+    "deezer_artist",
+    "lastfm_artist",
+    "discogs_artist",
+    "acoustid_artist",
+    "web_artist",
+    "artist_name",
+    "artists",
+    "track_artist",
+    "primary_artist",
+)
+PROVIDER_JSON_COLUMNS = (
+    "merged_json",
+    "providers_json",
+    "provider_results_json",
+    "provider_results",
+    "metadata_json",
+    "analysis_json",
+)
+ARTIST_JSON_FIELDS = ("artist", "artists", "artist_name", "track_artist", "primary_artist")
+PROVIDER_PRIORITY = {
+    "spotify": 1.00,
+    "itunes": 0.95,
+    "deezer": 0.90,
+    "lastfm": 0.85,
+    "musicbrainz": 0.80,
+    "acoustid": 0.78,
+    "discogs": 0.75,
+    "web_discovery": 0.70,
+    "sonoteller": 0.65,
+    "local_ai": 0.60,
+    "local_cleanup": 0.20,
+}
 
 MOJIBAKE_MARKERS = (
     "\u00c3",
@@ -100,7 +141,9 @@ METADATA_IDENTITY_VALUES = {
 }
 
 TITLE_NOISE_PATTERNS = (
+    r"official\s+live\s+video",
     r"official\s+music\s+video",
+    r"official\s+video\s+with\s+chords",
     r"official\s+lyric\s+video",
     r"official\s+lyrics\s+video",
     r"official\s+performance\s+video",
@@ -109,18 +152,38 @@ TITLE_NOISE_PATTERNS = (
     r"official\s+video",
     r"offizielles?\s+musikvideo",
     r"offizielles?\s+video",
+    r"officiell\s+musikvideo",
+    r"vid(?:e|\u00e9)o\s+officiel",
     r"officiel(?:le)?\s+video",
+    r"audio\s+officiel",
+    r"clip\s+officiel",
     r"video\s+oficial",
+    r"videoclip\s+oficial",
     r"music\s+video",
     r"lyric\s+video",
     r"lyrics\s+video",
     r"musikvideo",
     r"videoclip",
+    "#videosparani\u00f1os",
+    r"coke\s+studio",
+    r"video\s+edit",
+    r"video\s+with\s+fans",
+    r"album\s+mix",
+    r"4k\s+remaster",
+    r"visualizer\s+officiel",
     r"use\s+headphones",
     r"3d\s+audio",
+    r"dirty",
+    r"clean",
+    r"audio",
+    r"video",
 )
 BRACKETED_TITLE_NOISE = re.compile(
     r"\s*[\[(]\s*(?:" + "|".join(TITLE_NOISE_PATTERNS) + r")\s*[\])]\s*",
+    flags=re.IGNORECASE,
+)
+INLINE_TITLE_NOISE = re.compile(
+    r"(?:^|\s+(?:-|–|—|\||/)\s+|\s+)(?:" + "|".join(TITLE_NOISE_PATTERNS) + r")(?=$|\s+(?:-|–|—|\||/)\s+)",
     flags=re.IGNORECASE,
 )
 TRAILING_TITLE_NOISE = re.compile(
@@ -128,6 +191,15 @@ TRAILING_TITLE_NOISE = re.compile(
     flags=re.IGNORECASE,
 )
 TRAILING_HASHTAGS = re.compile(r"(?:\s+#[\w-]+)+\s*$", flags=re.UNICODE)
+FEATURED_ARTIST_TEXT = r"(?:feat\.?|ft\.?|featuring)\b"
+BRACKETED_FEATURED_ARTIST = re.compile(
+    r"\s*[\[(]\s*" + FEATURED_ARTIST_TEXT + r"[^)\]]*[\])]\s*",
+    flags=re.IGNORECASE,
+)
+TRAILING_FEATURED_ARTIST = re.compile(
+    r"\s+" + FEATURED_ARTIST_TEXT + r".*$",
+    flags=re.IGNORECASE,
+)
 
 
 def normalize_header(value: str) -> str:
@@ -185,13 +257,18 @@ def clean_title_value(value: str) -> str:
     previous = ""
     while previous != cleaned:
         previous = cleaned
+        cleaned = re.sub(r"\s*['\"]{2}\s*", " ", cleaned)
+        cleaned = BRACKETED_FEATURED_ARTIST.sub(" ", cleaned)
+        cleaned = TRAILING_FEATURED_ARTIST.sub("", cleaned)
         cleaned = BRACKETED_TITLE_NOISE.sub(" ", cleaned)
         cleaned = TRAILING_HASHTAGS.sub("", cleaned)
+        cleaned = INLINE_TITLE_NOISE.sub(" ", cleaned)
         cleaned = TRAILING_TITLE_NOISE.sub("", cleaned)
         cleaned = clean_value(cleaned)
+    cleaned = re.sub(r"[\[(]\s*[\])]", " ", cleaned)
     cleaned = re.sub(r"\s+([)\]])", r"\1", cleaned)
     cleaned = re.sub(r"([(\[])\s+", r"\1", cleaned)
-    return clean_value(cleaned).strip(" -_|")
+    return clean_value(cleaned).strip(" -_|'\"")
 
 
 def normalized_filename_key(value: str) -> str:
@@ -457,6 +534,139 @@ def normalize_tag_value(value: str, source_column: str) -> str:
     return title_case_value(value)
 
 
+def text_from_metadata_value(value: object) -> str:
+    if isinstance(value, str):
+        return clean_value(value)
+    if isinstance(value, (int, float)):
+        return clean_value(str(value))
+    if isinstance(value, list):
+        parts = [text_from_metadata_value(item) for item in value]
+        return ", ".join(part for part in parts if part)
+    if isinstance(value, dict):
+        for key in ("name", "artist", "artist_name", "title"):
+            if key in value:
+                text = text_from_metadata_value(value.get(key))
+                if text:
+                    return text
+    return ""
+
+
+def normalize_artist_candidate(value: object, *, title: str = "", parsed_title: str = "") -> str:
+    candidate = text_from_metadata_value(value).strip(" -_|'\"")
+    if not candidate:
+        return ""
+
+    parsed_artist, candidate_title = parse_artist_title_from_filename(candidate)
+    title_keys = {canonical_title(title), canonical_title(parsed_title)}
+    if parsed_artist and candidate_title and canonical_title(candidate_title) in title_keys:
+        candidate = parsed_artist
+
+    if is_unverified_artist(candidate):
+        return ""
+    candidate_key = canonical_value(candidate)
+    if not candidate_key or candidate_key in title_keys:
+        return ""
+    if len(candidate) > 140:
+        return ""
+    return candidate
+
+
+def float_from_value(value: object, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def artist_candidates_from_json(
+    value: str,
+    *,
+    title: str = "",
+    parsed_title: str = "",
+) -> list[tuple[float, str]]:
+    cleaned = clean_value(value)
+    if not cleaned:
+        return []
+    try:
+        data = json.loads(cleaned)
+    except ValueError:
+        return []
+
+    candidates: list[tuple[float, str]] = []
+
+    def add_candidate(candidate_value: object, score: float) -> None:
+        candidate = normalize_artist_candidate(candidate_value, title=title, parsed_title=parsed_title)
+        if candidate:
+            candidates.append((score, candidate))
+
+    def walk(node: object, base_score: float = 0.0, provider: str = "") -> None:
+        if isinstance(node, list):
+            for item in node:
+                walk(item, base_score, provider)
+            return
+        if not isinstance(node, dict):
+            return
+
+        provider_name = clean_value(str(node.get("provider") or provider)).lower()
+        confidence = float_from_value(node.get("confidence"), 0.0)
+        provider_score = PROVIDER_PRIORITY.get(provider_name, 0.50)
+
+        fields = node.get("fields")
+        if isinstance(fields, dict):
+            field_confidence = node.get("field_confidence")
+            artist_confidence = (
+                float_from_value(field_confidence.get("artist"), confidence)
+                if isinstance(field_confidence, dict)
+                else confidence
+            )
+            for field in ARTIST_JSON_FIELDS:
+                if field in fields:
+                    add_candidate(fields.get(field), 5.0 + provider_score + artist_confidence)
+
+        for field in ARTIST_JSON_FIELDS:
+            if field in node:
+                add_candidate(node.get(field), base_score + 3.0 + provider_score + confidence)
+
+        merged = node.get("merged")
+        if isinstance(merged, dict):
+            walk(merged, base_score + 0.5, provider_name)
+
+    walk(data)
+    return candidates
+
+
+def provider_artist_from_row(
+    row: dict[str, str],
+    header_map: dict[str, str],
+    *,
+    title: str = "",
+    parsed_title: str = "",
+) -> str:
+    candidates: list[tuple[float, str]] = []
+    for index, column in enumerate(PROVIDER_ARTIST_COLUMNS):
+        value = row_value(row, header_map, column)
+        candidate = normalize_artist_candidate(value, title=title, parsed_title=parsed_title)
+        if candidate:
+            candidates.append((4.0 - (index * 0.01), candidate))
+
+    for column in PROVIDER_JSON_COLUMNS:
+        value = row_value(row, header_map, column)
+        candidates.extend(artist_candidates_from_json(value, title=title, parsed_title=parsed_title))
+
+    deduped: dict[str, tuple[float, str]] = {}
+    for score, candidate in candidates:
+        key = canonical_value(candidate)
+        if not key:
+            continue
+        current = deduped.get(key)
+        if current is None or score > current[0]:
+            deduped[key] = (score, candidate)
+
+    if not deduped:
+        return ""
+    return max(deduped.values(), key=lambda item: item[0])[1]
+
+
 def resolve_artist(
     row: dict[str, str],
     header_map: dict[str, str],
@@ -467,14 +677,18 @@ def resolve_artist(
     filename = filename_for_row(row, header_map)
     parsed_artist, parsed_title = parse_artist_title_from_filename(filename)
     title = standardize_lyrics_marker(row_value(row, header_map, "title"))
-    if parsed_artist and (
+    should_replace_from_identity = (
         is_unverified_artist(artist)
         or is_unverified_title(title)
         or (parsed_title and title and canonical_title(parsed_title) == canonical_title(title))
-    ):
-        return parsed_artist
-    if not is_unverified_artist(artist):
+    )
+    if not should_replace_from_identity and not is_unverified_artist(artist):
         return artist
+
+    provider_artist = provider_artist_from_row(row, header_map, title=title, parsed_title=parsed_title)
+    if provider_artist:
+        return provider_artist
+
     if duration_resolver:
         embedded_artist = duration_resolver.resolve_embedded_identity(
             row,
@@ -484,6 +698,10 @@ def resolve_artist(
         )
         if not is_unverified_artist(embedded_artist):
             return embedded_artist
+    if parsed_artist and should_replace_from_identity:
+        return parsed_artist
+    if not is_unverified_artist(artist):
+        return artist
     return ""
 
 

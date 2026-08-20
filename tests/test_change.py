@@ -243,18 +243,82 @@ def test_title_cleanup_removes_artist_prefix_video_noise_and_icons(tmp_path: Pat
                 "duration_seconds": "180",
                 "bpm": "120",
             },
+            {
+                "title": "Say You Do ft. Imani Williams & DJ Fresh",
+                "artist": "Sigala, Imani Williams & DJ Fresh",
+                "album": "Single",
+                "genre": "Dance",
+                "subgenre": "Dance-pop",
+                "mood": "Energetic",
+                "weather": "All Weather",
+                "season": "All Season",
+                "age_group": "General",
+                "filename": "Sigala - Say You Do.mp3",
+                "year": "2025",
+                "language": "English",
+                "label": "SMC",
+                "vocal": "1",
+                "instrumental": "0",
+                "duration_seconds": "180",
+                "bpm": "120",
+            },
+            {
+                "title": "Sigala ft. Imani Williams & DJ Fresh - Say You Do (Official Live Video)",
+                "artist": "unknown",
+                "album": "Single",
+                "genre": "Dance",
+                "subgenre": "Dance-pop",
+                "mood": "Energetic",
+                "weather": "All Weather",
+                "season": "All Season",
+                "age_group": "General",
+                "filename": "Sigala ft. Imani Williams & DJ Fresh - Say You Do.mp3",
+                "year": "2025",
+                "language": "English",
+                "label": "SMC",
+                "vocal": "1",
+                "instrumental": "0",
+                "duration_seconds": "180",
+                "bpm": "120",
+            },
         ],
     )
 
     written, _tagged = upgrade_csv(source, output, MediaDurationResolver([]), strict_facts=True)
 
     rows = _read_rows(output)
-    assert written == 3
-    assert rows[0]["title"] == "HeartBeat (Feat TONY T & ALBA KRAS)"
+    assert written == 5
+    assert rows[0]["title"] == "HeartBeat"
     assert rows[1]["title"] == "VERLIEBT IN MICH"
     assert rows[2]["title"] == "Turn The Lights Off (Jon Hamm)"
+    assert rows[3]["title"] == "Say You Do"
+    assert rows[4]["title"] == "Say You Do"
+    assert rows[4]["artist"] == "Sigala ft. Imani Williams & DJ Fresh"
     assert {row["isDL"] for row in rows} == {"0"}
     assert {row["label"] for row in rows} == {"SMC"}
+
+
+def test_title_cleanup_removes_requested_promo_words() -> None:
+    examples = {
+        "Song (Official Music Video)": "Song",
+        "Song - Offizielles Musikvideo": "Song",
+        "Song | Videoclip Oficial": "Song",
+        "Song Audio Officiel": "Song",
+        "Song Clip Officiel": "Song",
+        "Song Official Video With Chords": "Song",
+        "Song Video With Fans": "Song",
+        "Song Album Mix": "Song",
+        "Clean - Song": "Song",
+        "Song Dirty": "Song",
+        "Song Video Edit": "Song",
+        "Song 4K Remaster": "Song",
+        "Song Coke Studio": "Song",
+        "Song #videosparani\u00f1os": "Song",
+        "Song ''": "Song",
+    }
+
+    for raw_title, expected_title in examples.items():
+        assert change_module.clean_title_value(raw_title) == expected_title
 
 
 def test_output_path_defaults_to_xls() -> None:
@@ -597,6 +661,63 @@ def test_ambiguous_filename_does_not_invent_smc_artist() -> None:
     headers = {key: key for key in row}
 
     assert resolve_artist(row, headers) == ""
+
+
+def test_missing_artist_uses_provider_json_before_filename() -> None:
+    row = {
+        "artist": "unknown",
+        "title": "Say You Do",
+        "filename": "Filename Artist - Say You Do.mp3",
+        "providers_json": json.dumps(
+            [
+                {
+                    "provider": "spotify",
+                    "confidence": 0.92,
+                    "fields": {"title": "Say You Do", "artist": "Sigala, Imani Williams & DJ Fresh"},
+                }
+            ]
+        ),
+    }
+    headers = {key: key for key in row}
+
+    assert resolve_artist(row, headers) == "Sigala, Imani Williams & DJ Fresh"
+
+
+def test_provider_artist_does_not_replace_good_existing_artist_without_reason() -> None:
+    row = {
+        "artist": "Known Artist",
+        "title": "Song",
+        "filename": "Other Artist - Different Song.mp3",
+        "providers_json": json.dumps(
+            [
+                {
+                    "provider": "spotify",
+                    "confidence": 0.92,
+                    "fields": {"title": "Song", "artist": "Provider Artist"},
+                }
+            ]
+        ),
+    }
+    headers = {key: key for key in row}
+
+    assert resolve_artist(row, headers) == "Known Artist"
+
+
+def test_merged_json_artist_repairs_shifted_identity_before_filename() -> None:
+    row = {
+        "artist": "Dance",
+        "title": "Song",
+        "filename": "Filename Artist - Song.mp3",
+        "merged_json": json.dumps(
+            {
+                "fields": {"title": "Song", "artist": "Verified API Artist"},
+                "field_confidence": {"artist": 0.96},
+            }
+        ),
+    }
+    headers = {key: key for key in row}
+
+    assert resolve_artist(row, headers) == "Verified API Artist"
 
 
 def test_missing_artist_uses_embedded_media_metadata(tmp_path: Path, monkeypatch) -> None:
