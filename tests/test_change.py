@@ -315,6 +315,8 @@ def test_title_cleanup_removes_requested_promo_words() -> None:
         "Song Coke Studio": "Song",
         "Song #videosparani\u00f1os": "Song",
         "Song ''": "Song",
+        "Song (1080)": "Song",
+        "Song (X-Mix) (1080)": "Song (X-Mix)",
     }
 
     for raw_title, expected_title in examples.items():

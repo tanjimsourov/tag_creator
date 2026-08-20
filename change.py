@@ -182,6 +182,10 @@ BRACKETED_TITLE_NOISE = re.compile(
     r"\s*[\[(]\s*(?:" + "|".join(TITLE_NOISE_PATTERNS) + r")\s*[\])]\s*",
     flags=re.IGNORECASE,
 )
+BRACKETED_VIDEO_RESOLUTION = re.compile(
+    r"\s*[\[(]\s*(?:480|720|1080|1440|2160)p?\s*[\])]\s*",
+    flags=re.IGNORECASE,
+)
 INLINE_TITLE_NOISE = re.compile(
     r"(?:^|\s+(?:-|–|—|\||/)\s+|\s+)(?:" + "|".join(TITLE_NOISE_PATTERNS) + r")(?=$|\s+(?:-|–|—|\||/)\s+)",
     flags=re.IGNORECASE,
@@ -261,6 +265,7 @@ def clean_title_value(value: str) -> str:
         cleaned = BRACKETED_FEATURED_ARTIST.sub(" ", cleaned)
         cleaned = TRAILING_FEATURED_ARTIST.sub("", cleaned)
         cleaned = BRACKETED_TITLE_NOISE.sub(" ", cleaned)
+        cleaned = BRACKETED_VIDEO_RESOLUTION.sub(" ", cleaned)
         cleaned = TRAILING_HASHTAGS.sub("", cleaned)
         cleaned = INLINE_TITLE_NOISE.sub(" ", cleaned)
         cleaned = TRAILING_TITLE_NOISE.sub("", cleaned)
