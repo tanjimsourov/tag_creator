@@ -1,9 +1,11 @@
 *.pyc
 __pycache__/
-.env
 .tmp/
+.pytest_cache/
 data/
 logs/
 models/
 output/
-
+clean/
+extra/
+all_folder_commands.txt

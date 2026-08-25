@@ -5,6 +5,7 @@ from difflib import SequenceMatcher
 from urllib.parse import quote
 
 from ..models import MediaFile, ProviderResult
+from ..querying import clean_track_text
 from .base import ProviderClient
 
 
@@ -146,7 +147,8 @@ class MusicBrainzClient(ProviderClient):
         catalog_numbers: list[str] = []
         for label_info in release.get("label-info", []):
             label_name = str((label_info.get("label") or {}).get("name", "")).strip()
-            catalog_number = str(label_info.get("catalog-number", "")).strip()
+            raw_catalog_number = label_info.get("catalog-number", "")
+            catalog_number = "" if raw_catalog_number is None else str(raw_catalog_number).strip()
             if label_name and label_name not in label_names:
                 label_names.append(label_name)
             if catalog_number and catalog_number not in catalog_numbers:
@@ -193,8 +195,8 @@ class MusicBrainzClient(ProviderClient):
             )
             recordings = data.get("recordings", []) if data else []
 
-        if not recordings and artist:
-            cleaned_title = self._clean_title(title)
+        if not recordings:
+            cleaned_title = clean_track_text(self._clean_title(title))
             strict_parts = []
             if title:
                 strict_parts.append(f'recording:"{title}"')
@@ -213,6 +215,8 @@ class MusicBrainzClient(ProviderClient):
                     " AND ".join(strict_parts),
                     " AND ".join(cleaned_parts),
                     loose_query,
+                    f'recording:"{cleaned_title}"',
+                    cleaned_title,
                 ]
             )
 
@@ -231,7 +235,8 @@ class MusicBrainzClient(ProviderClient):
         combined, title_similarity, artist_similarity, api_score, best = sorted(
             ranked, key=lambda item: item[0], reverse=True
         )[0]
-        if title_similarity < 0.45 or (artist and artist_similarity < 0.45):
+        min_title_similarity = 0.78 if not artist else 0.45
+        if title_similarity < min_title_similarity or (artist and artist_similarity < 0.45):
             return ProviderResult(
                 "musicbrainz",
                 0,

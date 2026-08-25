@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .clients import (
     AcoustIDClient,
+    ArtistSearchClient,
     ClapZeroShotClient,
     CoverArtArchiveClient,
     DiscogsClient,
@@ -33,6 +34,7 @@ def _all_clients(settings: Settings, store: CsvStore, rate_limiter: RateLimiter)
     """
     return {
         "acoustid": AcoustIDClient(store, rate_limiter, settings),
+        "artist_search": ArtistSearchClient(store, rate_limiter, settings),
         "itunes": ITunesClient(store, rate_limiter),
         "deezer": DeezerClient(store, rate_limiter),
         "local_cleanup": LocalCleanupClient(store, rate_limiter),

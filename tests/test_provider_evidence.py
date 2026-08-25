@@ -4,7 +4,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+from tag_creator.clients.artist_search import ArtistSearchClient
+from tag_creator.clients.deezer import DeezerClient
 from tag_creator.clients.discogs import DiscogsClient
+from tag_creator.clients.itunes import ITunesClient
 from tag_creator.clients.local_ai_audio import LocalAIAudioClient
 from tag_creator.clients.musicbrainz import MusicBrainzClient
 from tag_creator.clients.web_discovery import WebDiscoveryClient
@@ -90,6 +93,90 @@ def test_musicbrainz_rich_lookup_adds_only_catalog_relationship_data(tmp_path: P
     assert result.fields["comment"] == "Lyricist: Real Lyricist"
 
 
+def test_catalog_clients_find_artist_from_title_only(tmp_path: Path):
+    media = MediaFile(
+        path=tmp_path / "Is There Someone Else.mp4",
+        extension=".mp4",
+        size_bytes=1,
+        mtime=1.0,
+        tags={"title": "Is There Someone Else?", "artist": ""},
+    )
+
+    itunes = ITunesClient(Mock(), RateLimiter({}))
+    itunes.get_json = Mock(
+        return_value={
+            "results": [
+                {
+                    "trackName": "Is There Someone Else?",
+                    "artistName": "The Weeknd",
+                    "collectionName": "Dawn FM",
+                    "primaryGenreName": "R&B/Soul",
+                    "releaseDate": "2022-01-07T12:00:00Z",
+                    "trackViewUrl": "https://music.apple.com/example",
+                    "trackId": 1,
+                }
+            ]
+        }
+    )
+
+    deezer = DeezerClient(Mock(), RateLimiter({}))
+
+    def deezer_response(url: str, **_kwargs):
+        if url.endswith("/search"):
+            return {
+                "data": [
+                    {
+                        "id": 2,
+                        "title": "Is There Someone Else?",
+                        "artist": {"name": "The Weeknd"},
+                        "album": {"id": 3, "title": "Dawn FM"},
+                        "link": "https://www.deezer.com/track/2",
+                    }
+                ]
+            }
+        if url.endswith("/album/3"):
+            return {
+                "artist": {"name": "The Weeknd"},
+                "release_date": "2022-01-07",
+                "genres": {"data": [{"name": "R&B"}]},
+            }
+        raise AssertionError(url)
+
+    deezer.get_json = deezer_response
+
+    musicbrainz = MusicBrainzClient(Mock(), RateLimiter({}))
+
+    def musicbrainz_response(url: str, **_kwargs):
+        if url.endswith("/recording"):
+            return {
+                "recordings": [
+                    {
+                        "id": "recording-id",
+                        "score": 100,
+                        "title": "Is There Someone Else?",
+                        "artist-credit": [{"name": "The Weeknd", "joinphrase": ""}],
+                        "first-release-date": "2022-01-07",
+                    }
+                ]
+            }
+        if url.endswith("/recording/recording-id"):
+            return {
+                "id": "recording-id",
+                "title": "Is There Someone Else?",
+                "artist-credit": [{"name": "The Weeknd", "joinphrase": ""}],
+                "first-release-date": "2022-01-07",
+                "releases": [],
+                "relations": [],
+            }
+        raise AssertionError(url)
+
+    musicbrainz.get_json = musicbrainz_response
+
+    assert itunes.enrich(media).fields["artist"] == "The Weeknd"
+    assert deezer.enrich(media).fields["artist"] == "The Weeknd"
+    assert musicbrainz.enrich(media).fields["artist"] == "The Weeknd"
+
+
 def test_discogs_release_detail_adds_real_style_label_track_and_composer(make_settings):
     settings = make_settings(discogs_token="token")
     client = DiscogsClient(Mock(), RateLimiter({}), settings)
@@ -172,6 +259,67 @@ def test_web_discovery_rejects_metadata_page_without_artist_identity(tmp_path: P
 
     assert result is not None
     assert result.fields == {}
+
+
+def test_artist_search_extracts_google_answer_artist(tmp_path: Path, make_settings):
+    settings = make_settings(
+        artist_search_enabled=True,
+        artist_search_endpoint="https://search.invalid",
+        artist_search_min_confidence=0.86,
+    )
+    client = ArtistSearchClient(Mock(), RateLimiter({}), settings)
+    client.session.get = Mock(
+        return_value=SimpleNamespace(
+            ok=True,
+            text=(
+                '<div class="g">The artist for the song "Is There Someone Else?" '
+                "is The Weeknd. Song Details Artist: The Weeknd Album: Dawn FM (2022)</div>"
+            ),
+        )
+    )
+    media = MediaFile(
+        path=tmp_path / "Is There Someone Else.mp4",
+        extension=".mp4",
+        size_bytes=1,
+        mtime=1.0,
+        tags={"title": "Is There Someone Else?", "artist": ""},
+    )
+
+    result = client.enrich(media)
+
+    assert result is not None
+    assert result.fields["artist"] == "The Weeknd"
+    assert result.confidence >= 0.86
+
+
+def test_artist_search_extracts_karaoke_result_artist(tmp_path: Path, make_settings):
+    settings = make_settings(
+        artist_search_enabled=True,
+        artist_search_endpoint="https://search.invalid",
+        artist_search_min_confidence=0.86,
+    )
+    client = ArtistSearchClient(Mock(), RateLimiter({}), settings)
+    client.session.get = Mock(
+        return_value=SimpleNamespace(
+            ok=True,
+            text=(
+                '<div class="g">Karaoke Is There Someone Else? - The Weeknd '
+                "[No Guide Melody] YouTube EdKara</div>"
+            ),
+        )
+    )
+    media = MediaFile(
+        path=tmp_path / "karaoke.mp4",
+        extension=".mp4",
+        size_bytes=1,
+        mtime=1.0,
+        tags={"title": "Is There Someone Else?", "artist": "unknown"},
+    )
+
+    result = client.enrich(media)
+
+    assert result is not None
+    assert result.fields["artist"] == "The Weeknd"
 
 
 def test_local_ai_confidence_tracks_audio_evidence_strength():

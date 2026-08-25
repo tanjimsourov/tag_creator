@@ -156,6 +156,10 @@ class Settings:
     web_max_queries_per_file: int
     web_allowed_domains: list[str]
     web_search_endpoint: str
+    artist_search_enabled: bool
+    artist_search_endpoint: str
+    artist_search_max_results: int
+    artist_search_min_confidence: float
     provider_weights: dict[str, float]
     rate_limits: dict[str, float]
     acoustid_api_key: str
@@ -188,6 +192,7 @@ def _validate_settings(settings: Settings) -> None:
     _in_unit_range("MIN_FIELD_CONFIDENCE", settings.min_field_confidence)
     _in_unit_range("MIN_WRITE_CONFIDENCE", settings.min_write_confidence)
     _in_unit_range("LOCAL_AI_MIN_SCORE", settings.local_ai_min_score)
+    _in_unit_range("ARTIST_SEARCH_MIN_CONFIDENCE", settings.artist_search_min_confidence)
 
     if settings.worker_threads < 1:
         problems.append("WORKER_THREADS must be >= 1")
@@ -207,6 +212,8 @@ def _validate_settings(settings: Settings) -> None:
         problems.append("WEB_MAX_RESULTS must be >= 1")
     if settings.web_max_queries_per_file < 1:
         problems.append("WEB_MAX_QUERIES_PER_FILE must be >= 1")
+    if settings.artist_search_max_results < 1:
+        problems.append("ARTIST_SEARCH_MAX_RESULTS must be >= 1")
     if settings.local_ai_top_n < 1:
         problems.append("LOCAL_AI_TOP_N must be >= 1")
     if settings.clap_concurrency < 1:
@@ -276,6 +283,7 @@ def load_settings() -> Settings:
         "musicnn_mtg_jamendo": 0.82,
         "clap_zero_shot": 0.86,
         "web_discovery": 0.58,
+        "artist_search": 0.98,
         "rules_inference": 0.50,
         "sonoteller": 0.94,
         "musicbrainz": 0.90,
@@ -296,6 +304,7 @@ def load_settings() -> Settings:
         "musicnn_mtg_jamendo": 0.00,
         "clap_zero_shot": 0.00,
         "web_discovery": 2.00,
+        "artist_search": 1.00,
         "sonoteller": 1.00,
         "cover_art_archive": 0.25,
         "spotify": 0.10,
@@ -308,7 +317,7 @@ def load_settings() -> Settings:
         "FREE_STAGE_PROVIDERS",
         ["local_cleanup", "itunes", "deezer", "wikidata", "acoustid", "musicbrainz", "spotify", "lastfm", "discogs", "genius", "cover_art_archive"],
     )
-    web_stage = _list("WEB_STAGE_PROVIDERS", ["web_discovery", "rules_inference"])
+    web_stage = _list("WEB_STAGE_PROVIDERS", ["artist_search", "web_discovery", "rules_inference"])
     paid_stage = _list("PAID_STAGE_PROVIDERS", [])
     local_ai_stage = _list(
         "LOCAL_AI_STAGE_PROVIDERS",
@@ -527,6 +536,10 @@ def load_settings() -> Settings:
             ],
         ),
         web_search_endpoint=os.environ.get("WEB_SEARCH_ENDPOINT", "https://html.duckduckgo.com/html/").strip(),
+        artist_search_enabled=_bool("ARTIST_SEARCH_ENABLED", True),
+        artist_search_endpoint=os.environ.get("ARTIST_SEARCH_ENDPOINT", "https://www.google.com/search").strip(),
+        artist_search_max_results=_int("ARTIST_SEARCH_MAX_RESULTS", 12),
+        artist_search_min_confidence=_float("ARTIST_SEARCH_MIN_CONFIDENCE", 0.86),
         # Merge env overrides ON TOP of defaults so a provider added later always
         # has a sane weight/rate even if the user's .env predates it.
         provider_weights={**default_weights, **_mapping("PROVIDER_WEIGHTS", {})},

@@ -16,8 +16,6 @@ class ITunesClient(ProviderClient):
             return None
         ranked = []
         for artist, title in candidates:
-            if not artist:
-                continue
             query = " ".join(item for item in [artist, title] if item)
             data = self.get_json(
                 self.base_url,
@@ -25,11 +23,14 @@ class ITunesClient(ProviderClient):
                 cache_key_extra="song-search",
             )
             for item in (data.get("results", []) if data else []):
+                min_title = 0.82 if not artist else 0.55
                 plausible, title_score, artist_score = plausible_track_match(
                     title,
                     artist,
                     item.get("trackName", ""),
                     item.get("artistName", ""),
+                    min_title=min_title,
+                    min_artist=0.0 if not artist else 0.45,
                 )
                 if plausible:
                     ranked.append(((title_score * 0.60) + (artist_score * 0.40), title_score, artist_score, query, item))

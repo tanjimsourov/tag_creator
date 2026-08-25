@@ -1,4 +1,5 @@
 from .acoustid import AcoustIDClient
+from .artist_search import ArtistSearchClient
 from .cover_art_archive import CoverArtArchiveClient
 from .discogs import DiscogsClient
 from .genius import GeniusClient
@@ -16,6 +17,7 @@ from .rules_inference import RulesInferenceClient
 
 __all__ = [
     "AcoustIDClient",
+    "ArtistSearchClient",
     "CoverArtArchiveClient",
     "DiscogsClient",
     "GeniusClient",

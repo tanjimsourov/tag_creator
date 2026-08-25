@@ -18,8 +18,6 @@ class DeezerClient(ProviderClient):
             return None
         ranked = []
         for artist, title in candidates:
-            if not artist:
-                continue
             query = " ".join(item for item in [artist, title] if item)
             data = self.get_json(
                 f"{self.base_url}/search",
@@ -27,11 +25,14 @@ class DeezerClient(ProviderClient):
                 cache_key_extra="track-search",
             )
             for track in (data.get("data", []) if data else []):
+                min_title = 0.82 if not artist else 0.55
                 plausible, title_score, artist_score = plausible_track_match(
                     title,
                     artist,
                     track.get("title", ""),
                     track.get("artist", {}).get("name", ""),
+                    min_title=min_title,
+                    min_artist=0.0 if not artist else 0.45,
                 )
                 if plausible:
                     ranked.append(((title_score * 0.60) + (artist_score * 0.40), title_score, artist_score, query, track))

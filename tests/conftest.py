@@ -88,6 +88,10 @@ def _settings(tmp_path: Path, **overrides) -> Settings:
         web_max_queries_per_file=4,
         web_allowed_domains=[],
         web_search_endpoint="",
+        artist_search_enabled=False,
+        artist_search_endpoint="",
+        artist_search_max_results=12,
+        artist_search_min_confidence=0.86,
         provider_weights={},   # unknown providers default to 0.5 in the merge
         rate_limits={},        # unknown providers default to 0 delay (no sleeping)
         acoustid_api_key="",

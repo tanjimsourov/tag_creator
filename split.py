@@ -14,8 +14,8 @@ from pathlib import Path
 DEFAULT_INPUT_DIR = Path(os.getenv("OUTPUT_DIR", "output"))
 DEFAULT_OUTPUT_DIR = Path("clean")
 DEFAULT_SUFFIX = "_with_tag"
-DEFAULT_OUTPUT_EXTENSION = ".xls"
-SUPPORTED_TABULAR_EXTENSIONS = {".csv", ".xls"}
+DEFAULT_OUTPUT_EXTENSION = ".xlsx"
+SUPPORTED_TABULAR_EXTENSIONS = {".csv", ".xls", ".xlsx"}
 DEFAULT_MEDIA_PREFIXES = ("/app/input_media", "/app/mp3", "/app/mp4", "/app/media")
 UNMATCHED_GROUP = "_unmatched"
 
@@ -213,6 +213,31 @@ def find_csv_pairs(input_path: Path, tagged_path: Path | None, suffix: str) -> l
 
 
 def read_csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
+    if path.suffix.lower() == ".xlsx":
+        try:
+            from openpyxl import load_workbook
+        except ImportError as exc:
+            raise ValueError("openpyxl is required to read .xlsx files") from exc
+
+        workbook = load_workbook(path, read_only=True, data_only=True)
+        sheet = workbook[workbook.sheetnames[0]]
+        rows = list(sheet.iter_rows(values_only=True))
+        if not rows:
+            raise ValueError(f"{path} has no CSV header")
+        fieldnames = [clean_value(value) for value in rows[0]]
+        if not any(fieldnames):
+            raise ValueError(f"{path} has no CSV header")
+        records: list[dict[str, str]] = []
+        for row in rows[1:]:
+            record = {
+                fieldnames[index]: clean_value(row[index] if index < len(row) else "")
+                for index in range(len(fieldnames))
+                if fieldnames[index]
+            }
+            if any(record.values()):
+                records.append(record)
+        return fieldnames, records
+
     with path.open("r", newline="", encoding="utf-8-sig") as handle:
         reader = csv.DictReader(handle)
         if not reader.fieldnames:
@@ -283,6 +308,44 @@ def write_csv_atomic(path: Path, fieldnames: list[str], rows: list[dict[str, str
         raise FileExistsError(f"output exists, pass --overwrite to replace: {path}")
 
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.suffix.lower() == ".xlsx":
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, PatternFill
+            from openpyxl.utils import get_column_letter
+        except ImportError as exc:
+            raise ValueError("openpyxl is required to write .xlsx files") from exc
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "WithTag"
+        sheet.append(fieldnames)
+        for row in rows:
+            sheet.append([row.get(field, "") for field in fieldnames])
+
+        header_fill = PatternFill("solid", fgColor="1F4E78")
+        header_font = Font(color="FFFFFF", bold=True)
+        for cell in sheet[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+        for index, fieldname in enumerate(fieldnames, start=1):
+            values = [fieldname, *(str(row.get(fieldname, "")) for row in rows[:200])]
+            width = min(max(max((len(value) for value in values), default=10) + 2, 10), 48)
+            sheet.column_dimensions[get_column_letter(index)].width = width
+        sheet.freeze_panes = "A2"
+        sheet.auto_filter.ref = sheet.dimensions
+
+        handle = tempfile.NamedTemporaryFile(delete=False, dir=str(path.parent), suffix=".xlsx")
+        temporary_path = Path(handle.name)
+        handle.close()
+        try:
+            workbook.save(temporary_path)
+            temporary_path.replace(path)
+        finally:
+            if temporary_path.exists():
+                temporary_path.unlink()
+        return
+
     handle = tempfile.NamedTemporaryFile(
         "w",
         newline="",

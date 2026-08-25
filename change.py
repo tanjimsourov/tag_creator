@@ -39,8 +39,8 @@ OUTPUT_COLUMNS = (
 )
 DEFAULT_INPUT_DIR = Path(os.getenv("OUTPUT_DIR", "output"))
 DEFAULT_SUFFIX = "_with_tag"
-DEFAULT_OUTPUT_EXTENSION = ".xls"
-SUPPORTED_INPUT_EXTENSIONS = {".csv", ".xls"}
+DEFAULT_OUTPUT_EXTENSION = ".xlsx"
+SUPPORTED_INPUT_EXTENSIONS = {".csv", ".xls", ".xlsx"}
 MEDIA_EXTENSIONS = {".mp3", ".mp4", ".m4a", ".aac", ".flac", ".wav", ".wma", ".ogg"}
 DEFAULT_ALBUM = "Single"
 DEFAULT_LABEL = "SMC"
@@ -172,14 +172,20 @@ TITLE_NOISE_PATTERNS = (
     r"4k\s+remaster",
     r"visualizer\s+officiel",
     r"use\s+headphones",
+    r"no\s+guide\s+melody",
+    r"guide\s+melody",
     r"3d\s+audio",
     r"dirty",
     r"clean",
     r"audio",
     r"video",
 )
+TRAILING_TITLE_ONLY_NOISE_PATTERNS = (
+    *TITLE_NOISE_PATTERNS,
+    r"instrumental",
+)
 BRACKETED_TITLE_NOISE = re.compile(
-    r"\s*[\[(]\s*(?:" + "|".join(TITLE_NOISE_PATTERNS) + r")\s*[\])]\s*",
+    r"\s*[\[(]\s*(?:" + "|".join(TRAILING_TITLE_ONLY_NOISE_PATTERNS) + r")\s*[\])]\s*",
     flags=re.IGNORECASE,
 )
 BRACKETED_VIDEO_RESOLUTION = re.compile(
@@ -191,7 +197,11 @@ INLINE_TITLE_NOISE = re.compile(
     flags=re.IGNORECASE,
 )
 TRAILING_TITLE_NOISE = re.compile(
-    r"(?:\s*[|]\s*|\s+[-_]\s+|\s+)(?:" + "|".join(TITLE_NOISE_PATTERNS) + r")\s*$",
+    r"(?:\s*[|]\s*|\s+[-_]\s+|\s+)(?:" + "|".join(TRAILING_TITLE_ONLY_NOISE_PATTERNS) + r")\s*$",
+    flags=re.IGNORECASE,
+)
+LEADING_KARAOKE_TITLE_NOISE = re.compile(
+    r"^\s*karaoke\b\s*",
     flags=re.IGNORECASE,
 )
 TRAILING_HASHTAGS = re.compile(r"(?:\s+#[\w-]+)+\s*$", flags=re.UNICODE)
@@ -250,7 +260,7 @@ def remove_icon_characters(value: str) -> str:
         category = unicodedata.category(character)
         if character in {"\ufe0e", "\ufe0f", "\u200d"}:
             continue
-        if category in {"So", "Sk", "Cs"}:
+        if category in {"So", "Sk", "Cs"} or category.startswith("M"):
             continue
         characters.append(character)
     return clean_value("".join(characters))
@@ -266,6 +276,7 @@ def clean_title_value(value: str) -> str:
         cleaned = TRAILING_FEATURED_ARTIST.sub("", cleaned)
         cleaned = BRACKETED_TITLE_NOISE.sub(" ", cleaned)
         cleaned = BRACKETED_VIDEO_RESOLUTION.sub(" ", cleaned)
+        cleaned = LEADING_KARAOKE_TITLE_NOISE.sub(" ", cleaned)
         cleaned = TRAILING_HASHTAGS.sub("", cleaned)
         cleaned = INLINE_TITLE_NOISE.sub(" ", cleaned)
         cleaned = TRAILING_TITLE_NOISE.sub("", cleaned)
@@ -420,6 +431,10 @@ def parse_artist_title_from_filename(filename: str) -> tuple[str, str]:
         artist = stem[: match.start()]
         title = stem[match.end() :]
         if clean_value(artist) and clean_value(title):
+            left_title = clean_title_value(artist)
+            right_artist = clean_title_value(title)
+            if canonical_value(artist).startswith("karaoke ") and left_title and right_artist:
+                return right_artist, left_title
             return clean_value(artist), standardize_lyrics_marker(title)
     return "", ""
 
@@ -1803,6 +1818,102 @@ def output_path_for(input_path: Path, suffix: str, output_extension: str = DEFAU
     return input_path.with_name(f"{input_path.stem}{suffix}{extension}")
 
 
+def read_tabular(path: Path) -> tuple[list[str], list[dict[str, str]]]:
+    if path.suffix.lower() == ".xlsx":
+        try:
+            from openpyxl import load_workbook
+        except ImportError as exc:
+            raise ValueError("openpyxl is required to read .xlsx files") from exc
+
+        workbook = load_workbook(path, read_only=True, data_only=True)
+        sheet = workbook[workbook.sheetnames[0]]
+        rows = list(sheet.iter_rows(values_only=True))
+        if not rows:
+            raise ValueError(f"{path} has no CSV header")
+        fieldnames = [clean_value(value) for value in rows[0]]
+        if not any(fieldnames):
+            raise ValueError(f"{path} has no CSV header")
+        records: list[dict[str, str]] = []
+        for row in rows[1:]:
+            record = {
+                fieldnames[index]: clean_value(row[index] if index < len(row) else "")
+                for index in range(len(fieldnames))
+                if fieldnames[index]
+            }
+            if any(record.values()):
+                records.append(record)
+        return fieldnames, records
+
+    with path.open("r", newline="", encoding="utf-8-sig") as source_file:
+        reader = csv.DictReader(source_file)
+        if not reader.fieldnames:
+            raise ValueError(f"{path} has no CSV header")
+        return list(reader.fieldnames), list(reader)
+
+
+def write_tabular_atomic(path: Path, fieldnames: list[str], rows: list[dict[str, str]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.suffix.lower() == ".xlsx":
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, PatternFill
+            from openpyxl.utils import get_column_letter
+        except ImportError as exc:
+            raise ValueError("openpyxl is required to write .xlsx files") from exc
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "WithTag"
+        sheet.append(fieldnames)
+        for row in rows:
+            sheet.append([row.get(field, "") for field in fieldnames])
+
+        header_fill = PatternFill("solid", fgColor="1F4E78")
+        header_font = Font(color="FFFFFF", bold=True)
+        for cell in sheet[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+        for index, fieldname in enumerate(fieldnames, start=1):
+            values = [fieldname, *(str(row.get(fieldname, "")) for row in rows[:200])]
+            width = min(max(max((len(value) for value in values), default=10) + 2, 10), 48)
+            sheet.column_dimensions[get_column_letter(index)].width = width
+        sheet.freeze_panes = "A2"
+        sheet.auto_filter.ref = sheet.dimensions
+
+        handle = tempfile.NamedTemporaryFile(delete=False, dir=str(path.parent), suffix=".xlsx")
+        temporary_path = Path(handle.name)
+        handle.close()
+        try:
+            workbook.save(temporary_path)
+            temporary_path.replace(path)
+        finally:
+            if temporary_path.exists():
+                temporary_path.unlink()
+        return
+
+    handle = tempfile.NamedTemporaryFile(
+        "w",
+        newline="",
+        encoding="utf-8-sig",
+        delete=False,
+        dir=str(path.parent),
+        prefix=f".{path.name}.",
+        suffix=".part",
+    )
+    temporary_path = Path(handle.name)
+    try:
+        with handle:
+            writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(rows)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary_path.replace(path)
+    finally:
+        if temporary_path.exists():
+            temporary_path.unlink()
+
+
 def factual_issues(output_row: dict[str, str]) -> list[str]:
     issues: list[str] = []
     for field in ("title", "album", "artist", "genre", "filename", "year", "language", "label", "tag"):
@@ -1865,116 +1976,127 @@ def upgrade_csv(
     show_progress: bool = False,
     language_resolver: MissingLanguageResolver | None = None,
 ) -> tuple[int, int]:
-    with input_path.open("r", newline="", encoding="utf-8-sig") as source_file:
-        reader = csv.DictReader(source_file)
-        if not reader.fieldnames:
-            raise ValueError(f"{input_path} has no CSV header")
+    source_headers, source_rows = read_tabular(input_path)
+    normalized_headers = {normalize_header(header): header for header in source_headers}
+    csv_context = input_path.stem
+    genre_by_song: dict[str, str] = {}
+    missing_media_rows = 0
+    if duration_resolver.has_media_roots():
+        media_rows: list[dict[str, str]] = []
+        for row in source_rows:
+            if duration_resolver.resolve_media_path(row, normalized_headers, csv_context):
+                media_rows.append(row)
+            else:
+                missing_media_rows += 1
+        source_rows = media_rows
 
-        normalized_headers = {normalize_header(header): header for header in reader.fieldnames}
-        source_rows = list(reader)
-        csv_context = input_path.stem
-        genre_by_song: dict[str, str] = {}
-        missing_media_rows = 0
-        if duration_resolver.has_media_roots():
-            media_rows: list[dict[str, str]] = []
-            for row in source_rows:
-                if duration_resolver.resolve_media_path(row, normalized_headers, csv_context):
-                    media_rows.append(row)
-                else:
-                    missing_media_rows += 1
-            source_rows = media_rows
+    grouped_source_rows: dict[str, list[tuple[int, dict[str, str]]]] = {}
+    for source_index, row in enumerate(source_rows):
+        filename_key = duplicate_filename_key(filename_for_row(row, normalized_headers))
+        group_key = filename_key or f"__row_{source_index}"
+        grouped_source_rows.setdefault(group_key, []).append((source_index, row))
 
-        grouped_source_rows: dict[str, list[tuple[int, dict[str, str]]]] = {}
-        for source_index, row in enumerate(source_rows):
-            filename_key = duplicate_filename_key(filename_for_row(row, normalized_headers))
-            group_key = filename_key or f"__row_{source_index}"
-            grouped_source_rows.setdefault(group_key, []).append((source_index, row))
-
+    output_rows: list[dict[str, str]] = []
+    seen_output_rows: set[tuple[str, str, str, tuple[str, ...]]] = set()
+    rows = 0
+    tagged_rows = 0
+    unresolved: list[str] = []
+    removed: list[str] = []
+    duplicate_rows = len(source_rows) - len(grouped_source_rows)
+    fsync_every_rows = max(1, int(os.getenv("CSV_FSYNC_EVERY_ROWS", "25")))
+    is_xlsx_output = output_path.suffix.lower() == ".xlsx"
+    print(f"writing output: {output_path}")
+    target_file = None
+    writer = None
+    if not is_xlsx_output:
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        seen_output_rows: set[tuple[str, str, str, tuple[str, ...]]] = set()
-        rows = 0
-        tagged_rows = 0
-        unresolved: list[str] = []
-        removed: list[str] = []
-        duplicate_rows = len(source_rows) - len(grouped_source_rows)
-        fsync_every_rows = max(1, int(os.getenv("CSV_FSYNC_EVERY_ROWS", "25")))
-        print(f"streaming output: {output_path}")
-        with output_path.open("w", newline="", encoding="utf-8-sig") as target_file:
-            writer = csv.DictWriter(target_file, fieldnames=OUTPUT_COLUMNS, extrasaction="ignore")
-            writer.writeheader()
-            target_file.flush()
-            os.fsync(target_file.fileno())
-            with tqdm(
-                total=len(source_rows),
-                desc=f"Converting {input_path.name}",
-                unit="row",
-                dynamic_ncols=True,
-                mininterval=0.5,
-                disable=not show_progress,
-            ) as progress:
-                for source_group in grouped_source_rows.values():
-                    candidates: list[tuple[int, int, dict[str, str]]] = []
-                    for source_index, row in source_group:
-                        current_name = filename_for_row(row, normalized_headers) or row_value(
-                            row, normalized_headers, "title"
-                        )
-                        if current_name:
-                            progress.set_postfix_str(clean_value(current_name)[:45], refresh=False)
-                        output_row = build_output_row(
-                            row,
-                            normalized_headers,
-                            duration_resolver,
-                            language_resolver,
-                            excel_time_text=excel_time_text,
-                            csv_context=csv_context,
-                            genre_by_song=genre_by_song,
-                        )
-                        candidates.append((output_row_quality_score(output_row), -source_index, output_row))
-                        progress.update(1)
+        target_file = output_path.open("w", newline="", encoding="utf-8-sig")
+        writer = csv.DictWriter(target_file, fieldnames=OUTPUT_COLUMNS, extrasaction="ignore")
+        writer.writeheader()
+        target_file.flush()
+        os.fsync(target_file.fileno())
+    try:
+        with tqdm(
+            total=len(source_rows),
+            desc=f"Converting {input_path.name}",
+            unit="row",
+            dynamic_ncols=True,
+            mininterval=0.5,
+            disable=not show_progress,
+        ) as progress:
+            for source_group in grouped_source_rows.values():
+                candidates: list[tuple[int, int, dict[str, str]]] = []
+                for source_index, row in source_group:
+                    current_name = filename_for_row(row, normalized_headers) or row_value(
+                        row, normalized_headers, "title"
+                    )
+                    if current_name:
+                        progress.set_postfix_str(clean_value(current_name)[:45], refresh=False)
+                    output_row = build_output_row(
+                        row,
+                        normalized_headers,
+                        duration_resolver,
+                        language_resolver,
+                        excel_time_text=excel_time_text,
+                        csv_context=csv_context,
+                        genre_by_song=genre_by_song,
+                    )
+                    candidates.append((output_row_quality_score(output_row), -source_index, output_row))
+                    progress.update(1)
 
-                    if not candidates:
-                        continue
-                    output_row = max(candidates, key=lambda candidate: (candidate[0], candidate[1]))[2]
-                    identity = output_identity_key(output_row)
-                    if identity in seen_output_rows:
-                        continue
-                    seen_output_rows.add(identity)
-                    removal_issues = cleaning_issues(output_row) if strict_facts else []
-                    if removal_issues:
-                        removed.append(
-                            f"{output_row.get('filename') or output_row.get('title')}: "
-                            f"{', '.join(removal_issues)}"
-                        )
-                        continue
+                if not candidates:
+                    continue
+                output_row = max(candidates, key=lambda candidate: (candidate[0], candidate[1]))[2]
+                identity = output_identity_key(output_row)
+                if identity in seen_output_rows:
+                    continue
+                seen_output_rows.add(identity)
+                removal_issues = cleaning_issues(output_row) if strict_facts else []
+                if removal_issues:
+                    removed.append(
+                        f"{output_row.get('filename') or output_row.get('title')}: "
+                        f"{', '.join(removal_issues)}"
+                    )
+                    continue
 
-                    issues = factual_issues(output_row) if strict_facts else []
-                    if issues:
-                        unresolved.append(
-                            f"{output_row.get('filename') or output_row.get('title')}: {', '.join(issues)}"
-                        )
+                issues = factual_issues(output_row) if strict_facts else []
+                if issues:
+                    unresolved.append(
+                        f"{output_row.get('filename') or output_row.get('title')}: {', '.join(issues)}"
+                    )
+                if writer is not None and target_file is not None:
                     writer.writerow(output_row)
                     target_file.flush()
-                    rows += 1
-                    if rows % fsync_every_rows == 0:
+                    if (rows + 1) % fsync_every_rows == 0:
                         os.fsync(target_file.fileno())
-                    if output_row["tag"]:
-                        tagged_rows += 1
+                else:
+                    output_rows.append(output_row)
+                rows += 1
+                if output_row["tag"]:
+                    tagged_rows += 1
+    finally:
+        if target_file is not None:
+            target_file.flush()
             os.fsync(target_file.fileno())
+            target_file.close()
 
-        if duplicate_rows or removed or missing_media_rows:
-            print(
-                f"cleaning complete: duplicate_filename_rows_removed={duplicate_rows}, "
-                f"missing_media_rows_skipped={missing_media_rows}, "
-                f"unresolved_or_incomplete_rows_removed={len(removed)}"
-            )
-        if unresolved:
-            preview = "\n".join(f"  - {item}" for item in unresolved[:20])
-            remainder = len(unresolved) - min(20, len(unresolved))
-            suffix = f"\n  ... and {remainder} more" if remainder else ""
-            print(
-                f"validation warning: {len(unresolved)} row(s) contain unresolved measured facts; "
-                f"all unique rows were retained in {output_path}:\n{preview}{suffix}"
-            )
+    if is_xlsx_output:
+        write_tabular_atomic(output_path, list(OUTPUT_COLUMNS), output_rows)
+
+    if duplicate_rows or removed or missing_media_rows:
+        print(
+            f"cleaning complete: duplicate_filename_rows_removed={duplicate_rows}, "
+            f"missing_media_rows_skipped={missing_media_rows}, "
+            f"unresolved_or_incomplete_rows_removed={len(removed)}"
+        )
+    if unresolved:
+        preview = "\n".join(f"  - {item}" for item in unresolved[:20])
+        remainder = len(unresolved) - min(20, len(unresolved))
+        suffix = f"\n  ... and {remainder} more" if remainder else ""
+        print(
+            f"validation warning: {len(unresolved)} row(s) contain unresolved measured facts; "
+            f"all unique rows were retained in {output_path}:\n{preview}{suffix}"
+        )
 
     return rows, tagged_rows
 

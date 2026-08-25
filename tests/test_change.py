@@ -27,8 +27,8 @@ def _write_source(path: Path, rows: list[dict[str, str]]) -> None:
 
 
 def _read_rows(path: Path) -> list[dict[str, str]]:
-    with path.open("r", newline="", encoding="utf-8-sig") as handle:
-        return list(csv.DictReader(handle))
+    _headers, rows = change_module.read_tabular(path)
+    return rows
 
 
 def test_upgrade_applies_portal_rules_and_preserves_source(tmp_path: Path, monkeypatch) -> None:
@@ -317,16 +317,28 @@ def test_title_cleanup_removes_requested_promo_words() -> None:
         "Song ''": "Song",
         "Song (1080)": "Song",
         "Song (X-Mix) (1080)": "Song (X-Mix)",
+        "Karaoke\u266b Is There Someone Else": "Is There Someone Else",
+        "The Weeknd [No Guide Melody] Instrumental": "The Weeknd",
+        "Harry Styles (No Guide Melody) Instrumental": "Harry Styles",
     }
 
     for raw_title, expected_title in examples.items():
         assert change_module.clean_title_value(raw_title) == expected_title
 
 
-def test_output_path_defaults_to_xls() -> None:
+def test_karaoke_filename_reversal_removes_icons_and_no_guide_noise() -> None:
+    artist, title = change_module.parse_artist_title_from_filename(
+        "Karaoke\u266b Is There Someone Else - The Weeknd [No Guide Melody] Instrumental.mp4"
+    )
+
+    assert artist == "The Weeknd"
+    assert title == "Is There Someone Else"
+
+
+def test_output_path_defaults_to_xlsx() -> None:
     source = Path("LH MP3.csv")
 
-    assert change_module.output_path_for(source, "_with_tag") == Path("LH MP3_with_tag.xls")
+    assert change_module.output_path_for(source, "_with_tag") == Path("LH MP3_with_tag.xlsx")
     assert change_module.output_path_for(source, "_with_tag", ".csv") == Path("LH MP3_with_tag.csv")
 
 
