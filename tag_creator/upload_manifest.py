@@ -13,7 +13,7 @@ from tag_creator.media import read_media_file
 
 
 DEFAULT_MEDIA_EXTENSIONS = {".mp3", ".mp4", ".m4a", ".aac", ".flac", ".wav", ".wma", ".ogg"}
-DEFAULT_EXCLUDED_DIR_NAMES = {"normalized"}
+DEFAULT_EXCLUDED_DIR_NAMES = {"normalized", "normalization"}
 MANIFEST_SCHEMA_VERSION = 1
 
 _VIDEO_NOISE_PATTERNS = (

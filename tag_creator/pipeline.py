@@ -14,6 +14,7 @@ from .config import Settings
 from .csv_store import CsvStore
 from .media import read_media_file, scan_media_files, write_tags
 from .models import EnrichmentResult, MediaFile, ProviderResult, RunSummary
+from .normalization import normalize_mp3_directories
 from .providers import build_provider_client_map
 from .rate_limit import RateLimiter
 from .reports import StreamingReportWriter, write_run_summary
@@ -261,6 +262,7 @@ def scan_library(
     selected_input = input_dir or settings.input_dir
     selected_limit = settings.limit if limit is None else limit
     if input_paths is None:
+        normalize_mp3_directories(selected_input)
         paths = scan_media_files(selected_input, settings.supported_extensions, selected_limit)
     else:
         wanted = {extension.lower() for extension in settings.supported_extensions}

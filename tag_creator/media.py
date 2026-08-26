@@ -34,7 +34,7 @@ from mutagen.mp4 import MP4, MP4Cover
 from .models import MediaFile
 
 LOGGER = logging.getLogger(__name__)
-DEFAULT_EXCLUDED_DIR_NAMES = {"normalized"}
+DEFAULT_EXCLUDED_DIR_NAMES = {"normalized", "normalization"}
 
 # field name -> single-valued ID3 text frame class (date/year handled separately)
 _MP3_TEXT_FRAMES = {
@@ -57,7 +57,7 @@ def scan_media_files(input_dir: Path, extensions: list[str], limit: int | None =
     wanted = {extension.lower() for extension in extensions}
     excluded_dir_names = {
         value.strip().casefold()
-        for value in os.getenv("EXCLUDED_MEDIA_DIR_NAMES", "normalized").split(",")
+        for value in os.getenv("EXCLUDED_MEDIA_DIR_NAMES", "normalized,normalization").split(",")
         if value.strip()
     } or DEFAULT_EXCLUDED_DIR_NAMES
     files = [

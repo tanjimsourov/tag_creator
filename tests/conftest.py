@@ -26,6 +26,11 @@ def sample_mp3(tmp_path: Path) -> Path:
     return make_mp3(tmp_path / "song.mp3")
 
 
+@pytest.fixture(autouse=True)
+def disable_media_normalization(monkeypatch):
+    monkeypatch.setenv("MEDIA_NORMALIZATION_ENABLED", "false")
+
+
 def _settings(tmp_path: Path, **overrides) -> Settings:
     base = dict(
         input_dir=tmp_path / "media",

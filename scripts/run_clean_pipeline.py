@@ -150,7 +150,7 @@ def run_once(args: argparse.Namespace) -> None:
         os.getenv("SUPPORTED_EXTENSIONS", "")
         or ",".join(sorted(DEFAULT_MEDIA_EXTENSIONS))
     )
-    excluded = parse_excluded_dir_names(os.getenv("EXCLUDED_MEDIA_DIR_NAMES", "normalized"))
+    excluded = parse_excluded_dir_names(os.getenv("EXCLUDED_MEDIA_DIR_NAMES", "normalized,normalization"))
 
     if args.skip_rename:
         scanned = scan_media_files(input_roots, extensions=extensions, excluded_dir_names=excluded)

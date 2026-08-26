@@ -52,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--exclude-dirs",
         default="",
-        help="Comma-separated folder names to skip. Default: EXCLUDED_MEDIA_DIR_NAMES or normalized.",
+        help="Comma-separated folder names to skip. Default: EXCLUDED_MEDIA_DIR_NAMES or normalized,normalization.",
     )
     parser.add_argument("--limit", type=int, help="Optional test limit.")
     parser.add_argument("--mark-existing", action="store_true", help="Record current files as already processed.")
@@ -95,7 +95,7 @@ def main() -> int:
         or os.getenv("SUPPORTED_EXTENSIONS", "")
         or ",".join(sorted(DEFAULT_MEDIA_EXTENSIONS))
     )
-    excluded = parse_excluded_dir_names(args.exclude_dirs or os.getenv("EXCLUDED_MEDIA_DIR_NAMES", "normalized"))
+    excluded = parse_excluded_dir_names(args.exclude_dirs or os.getenv("EXCLUDED_MEDIA_DIR_NAMES", "normalized,normalization"))
 
     summary = prepare_uploads(
         roots,
