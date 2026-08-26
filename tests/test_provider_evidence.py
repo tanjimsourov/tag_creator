@@ -330,6 +330,36 @@ def test_artist_search_extracts_artist_colon_song_context():
     assert ("4*TOWN", 0.91, "artist_colon_title_context") in candidates
 
 
+def test_artist_search_queries_include_year_context_and_trusted_sources(tmp_path: Path):
+    media = MediaFile(
+        path=tmp_path / "Bowlnfun Sing King Karaoke" / "Nobody Like U.mp4",
+        extension=".mp4",
+        size_bytes=1,
+        mtime=1.0,
+        tags={
+            "title": "Nobody Like U",
+            "artist": "",
+            "album": "Turning Red",
+            "year": "2022",
+        },
+    )
+
+    queries = ArtistSearchClient._query_candidates(media, "Nobody Like U")
+
+    assert '"Nobody Like U" "2022" artist song' in queries
+    assert '"Nobody Like U" "Turning Red" artist' in queries
+    assert '"Nobody Like U" site:open.spotify.com' in queries
+    assert '"Nobody Like U.mp4" artist song' not in queries
+
+
+def test_artist_search_metadata_terms_boost_matching_music_result():
+    block = "Spotify Nobody Like U by 4*TOWN Turning Red 2022 Album"
+
+    candidates = ArtistSearchClient._artists_from_block(block, "Nobody Like U", ["Turning Red", "2022"])
+
+    assert ("4*TOWN", 0.99, "title_by_artist") in candidates
+
+
 def test_artist_search_rejects_ambiguous_multi_artist_title(tmp_path: Path, make_settings):
     settings = make_settings(
         artist_search_enabled=True,

@@ -4,6 +4,7 @@ import logging
 import re
 from collections import defaultdict
 from html import unescape
+from typing import Iterable
 
 from bs4 import BeautifulSoup
 
@@ -44,6 +45,21 @@ TRUSTED_MUSIC_SOURCES = (
     "genius",
     "last.fm",
 )
+GENERIC_CONTEXT_WORDS = {
+    "audio",
+    "clean",
+    "dirty",
+    "hd",
+    "instrumental",
+    "karaoke",
+    "lyrics",
+    "music",
+    "normalized",
+    "official",
+    "remaster",
+    "video",
+    "visualizer",
+}
 
 
 class ArtistSearchClient(ProviderClient):
@@ -90,6 +106,103 @@ class ArtistSearchClient(ProviderClient):
         return titles
 
     @staticmethod
+    def _metadata_terms(media: MediaFile) -> list[str]:
+        terms: list[str] = []
+        for field in ("year", "date", "album", "album_artist", "genre", "label"):
+            value = clean_track_text(media.tags.get(field, ""))
+            if field == "date":
+                match = re.search(r"\b(19\d{2}|20\d{2})\b", value)
+                value = match.group(1) if match else ""
+            if value:
+                terms.append(value)
+
+        for part in reversed(media.path.parts[:-1]):
+            cleaned = clean_track_text(part)
+            key = normalize_text(cleaned)
+            if not key or key in GENERIC_CONTEXT_WORDS:
+                continue
+            if re.fullmatch(r"(19\d{2}|20\d{2})", key):
+                continue
+            terms.append(cleaned)
+            if len(terms) >= 6:
+                break
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for term in terms:
+            key = normalize_text(term)
+            if key and key not in seen:
+                seen.add(key)
+                deduped.append(term)
+        return deduped
+
+    @staticmethod
+    def _artist_hints(media: MediaFile) -> list[str]:
+        hints: list[str] = []
+        for field in ("artist", "album_artist"):
+            value = ArtistSearchClient._clean_artist(media.tags.get(field, ""))
+            if value:
+                hints.append(value)
+
+        for stem_artist, _stem_title in candidate_track_pairs(media, limit=3):
+            value = ArtistSearchClient._clean_artist(stem_artist)
+            if value:
+                hints.append(value)
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for hint in hints:
+            key = normalize_text(hint)
+            if key and key not in seen:
+                seen.add(key)
+                deduped.append(hint)
+        return deduped[:3]
+
+    @classmethod
+    def _query_candidates(cls, media: MediaFile, title: str) -> list[str]:
+        metadata_terms = cls._metadata_terms(media)
+        artist_hints = cls._artist_hints(media)
+        year = next((term for term in metadata_terms if re.fullmatch(r"19\d{2}|20\d{2}", term)), "")
+        album_or_context = next((term for term in metadata_terms if term != year), "")
+        filename_text = clean_track_text(media.path.stem)
+        queries = [
+            f'the artist for the song "{title}"',
+            f'"{title}" artist song',
+            f'"{title}" karaoke artist',
+            f'"{title}" official song artist',
+            f'"{title}" site:music.apple.com',
+            f'"{title}" site:open.spotify.com',
+            f'"{title}" site:musicbrainz.org',
+        ]
+        if year:
+            queries.extend(
+                [
+                    f'"{title}" "{year}" artist song',
+                    f'the artist for the song "{title}" "{year}"',
+                ]
+            )
+        if album_or_context:
+            queries.extend(
+                [
+                    f'"{title}" "{album_or_context}" artist',
+                    f'"{title}" "{album_or_context}" song',
+                ]
+            )
+        for artist in artist_hints:
+            queries.append(f'"{title}" "{artist}" song artist')
+        if filename_text and normalize_text(filename_text) != normalize_text(title):
+            queries.append(f'"{filename_text}" artist song')
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for query in queries:
+            key = normalize_text(query)
+            if key and key not in seen:
+                seen.add(key)
+                deduped.append(query)
+        return deduped[:12]
+
+    @staticmethod
     def _result_blocks(html: str) -> list[str]:
         soup = BeautifulSoup(html, "html.parser")
         blocks: list[str] = []
@@ -119,6 +232,12 @@ class ArtistSearchClient(ProviderClient):
             maxsplit=1,
             flags=re.I,
         )[0]
+        cleaned = re.split(
+            r"\s+(?:Album|Song Details|Genre|Released|Release Date|Year|Lyrics|YouTube|Spotify)\b",
+            cleaned,
+            maxsplit=1,
+            flags=re.I,
+        )[0]
         cleaned = re.sub(r"\([^)]*\)|\[[^]]*\]", " ", cleaned)
         cleaned = re.sub(r"\s+", " ", cleaned).strip(" .,;:-_|")
         title_key = normalize_text(title)
@@ -138,8 +257,23 @@ class ArtistSearchClient(ProviderClient):
         normalized = normalize_text(block)
         return 0.04 if any(source in normalized for source in TRUSTED_MUSIC_SOURCES) else 0.0
 
+    @staticmethod
+    def _metadata_bonus(block: str, metadata_terms: Iterable[str]) -> float:
+        normalized = normalize_text(block)
+        matched = 0
+        for term in metadata_terms:
+            key = normalize_text(term)
+            if key and key in normalized:
+                matched += 1
+        return min(0.08, matched * 0.025)
+
     @classmethod
-    def _artists_from_block(cls, block: str, title: str) -> list[tuple[str, float, str]]:
+    def _artists_from_block(
+        cls,
+        block: str,
+        title: str,
+        metadata_terms: Iterable[str] = (),
+    ) -> list[tuple[str, float, str]]:
         candidates: list[tuple[str, float, str]] = []
         title_pattern = re.escape(title)
         normalized_block = normalize_text(block)
@@ -186,10 +320,14 @@ class ArtistSearchClient(ProviderClient):
                 "artist_colon_title_context",
             )
         )
-        bonus = cls._source_bonus(block)
+        bonus = cls._source_bonus(block) + cls._metadata_bonus(block, metadata_terms)
         for pattern, confidence, source in patterns:
             for match in re.finditer(pattern, block, flags=re.I):
-                artist = cls._clean_artist(match.group(1), title)
+                candidate_text = match.group(1)
+                for term in metadata_terms:
+                    cleaned_term = re.escape(term)
+                    candidate_text = re.sub(rf"\s+{cleaned_term}\b.*$", "", candidate_text, flags=re.I)
+                artist = cls._clean_artist(candidate_text, title)
                 if artist:
                     candidates.append((artist, min(0.99, confidence + bonus), source))
         return candidates
@@ -212,15 +350,11 @@ class ArtistSearchClient(ProviderClient):
         votes: dict[str, dict[str, object]] = defaultdict(
             lambda: {"score": 0.0, "sources": set(), "examples": []}
         )
+        metadata_terms = self._metadata_terms(media)
         for title in self._title_candidates(media):
-            queries = [
-                f'the artist for the song "{title}"',
-                f'"{title}" artist song',
-                f'"{title}" karaoke artist',
-            ]
-            for query in queries:
+            for query in self._query_candidates(media, title):
                 for block in self._search_blocks(query):
-                    for artist, confidence, source in self._artists_from_block(block, title):
+                    for artist, confidence, source in self._artists_from_block(block, title, metadata_terms):
                         key = normalize_text(artist)
                         if not key:
                             continue

@@ -1982,13 +1982,9 @@ def upgrade_csv(
     genre_by_song: dict[str, str] = {}
     missing_media_rows = 0
     if duration_resolver.has_media_roots():
-        media_rows: list[dict[str, str]] = []
         for row in source_rows:
-            if duration_resolver.resolve_media_path(row, normalized_headers, csv_context):
-                media_rows.append(row)
-            else:
+            if not duration_resolver.resolve_media_path(row, normalized_headers, csv_context):
                 missing_media_rows += 1
-        source_rows = media_rows
 
     grouped_source_rows: dict[str, list[tuple[int, dict[str, str]]]] = {}
     for source_index, row in enumerate(source_rows):
@@ -2051,15 +2047,9 @@ def upgrade_csv(
                 if identity in seen_output_rows:
                     continue
                 seen_output_rows.add(identity)
-                removal_issues = cleaning_issues(output_row) if strict_facts else []
-                if removal_issues:
-                    removed.append(
-                        f"{output_row.get('filename') or output_row.get('title')}: "
-                        f"{', '.join(removal_issues)}"
-                    )
-                    continue
-
-                issues = factual_issues(output_row) if strict_facts else []
+                issues = []
+                if strict_facts:
+                    issues = sorted(set(cleaning_issues(output_row) + factual_issues(output_row)))
                 if issues:
                     unresolved.append(
                         f"{output_row.get('filename') or output_row.get('title')}: {', '.join(issues)}"
@@ -2086,7 +2076,7 @@ def upgrade_csv(
     if duplicate_rows or removed or missing_media_rows:
         print(
             f"cleaning complete: duplicate_filename_rows_removed={duplicate_rows}, "
-            f"missing_media_rows_skipped={missing_media_rows}, "
+            f"missing_media_rows_retained={missing_media_rows}, "
             f"unresolved_or_incomplete_rows_removed={len(removed)}"
         )
     if unresolved:

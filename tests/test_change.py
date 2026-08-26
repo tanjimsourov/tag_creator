@@ -448,7 +448,7 @@ def test_media_resolver_accepts_csv_context_folder_under_mounted_root(tmp_path: 
     assert resolved == media
 
 
-def test_strict_cleaning_removes_unmeasured_rows(tmp_path: Path, monkeypatch, capsys) -> None:
+def test_strict_cleaning_retains_unmeasured_rows_with_warning(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("GENRE_API_ENABLED", "false")
     source = tmp_path / "input.csv"
     output = tmp_path / "input_with_tag.csv"
@@ -467,9 +467,12 @@ def test_strict_cleaning_removes_unmeasured_rows(tmp_path: Path, monkeypatch, ca
 
     rows, tagged_rows = upgrade_csv(source, output, MediaDurationResolver([tmp_path]), strict_facts=True)
 
-    assert (rows, tagged_rows) == (0, 0)
-    assert _read_rows(output) == []
-    assert "missing_media_rows_skipped=1" in capsys.readouterr().out
+    assert (rows, tagged_rows) == (1, 1)
+    result = _read_rows(output)
+    assert result[0]["filename"] == "missing.mp3"
+    captured = capsys.readouterr().out
+    assert "missing_media_rows_retained=1" in captured
+    assert "validation warning" in captured
 
 
 def test_duplicate_filename_cleaning_keeps_best_complete_row(tmp_path: Path, monkeypatch) -> None:
@@ -590,7 +593,7 @@ def test_shifted_numeric_genre_falls_back_to_media_path_genre(monkeypatch) -> No
     assert "E Major" not in result["tag"]
 
 
-def test_strict_cleaning_removes_rows_with_missing_required_metadata(tmp_path: Path, monkeypatch) -> None:
+def test_strict_cleaning_retains_rows_with_missing_required_metadata(tmp_path: Path, monkeypatch, capsys) -> None:
     monkeypatch.setenv("GENRE_API_ENABLED", "false")
     source = tmp_path / "input.csv"
     output = tmp_path / "input_with_tag.csv"
@@ -617,8 +620,10 @@ def test_strict_cleaning_removes_rows_with_missing_required_metadata(tmp_path: P
 
     written, tagged = upgrade_csv(source, output, MediaDurationResolver([]), strict_facts=True)
 
-    assert (written, tagged) == (1, 1)
-    assert _read_rows(output)[0]["title"] == "Complete"
+    assert (written, tagged) == (2, 2)
+    rows = _read_rows(output)
+    assert [row["title"] for row in rows] == ["Incomplete", "Complete"]
+    assert "validation warning" in capsys.readouterr().out
 
 
 def test_streamed_output_keeps_completed_rows_after_later_failure(tmp_path: Path, monkeypatch) -> None:
