@@ -117,7 +117,7 @@ def normalize_mp3_file(source: Path, target: Path) -> bool:
             f"offset={measured['target_offset']}:linear=true:print_format=summary"
         )
 
-    temporary_target = target.with_name(f".{target.name}.tmp")
+    temporary_target = target.with_name(f".{target.stem}.tmp{target.suffix}")
     command = [
         _ffmpeg_path(),
         "-hide_banner",
@@ -137,6 +137,8 @@ def normalize_mp3_file(source: Path, target: Path) -> bool:
         bitrate,
         "-map_metadata",
         "0",
+        "-f",
+        "mp3",
         str(temporary_target),
     ]
     try:
