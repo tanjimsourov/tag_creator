@@ -29,7 +29,21 @@ ARTIST_NOISE_WORDS = {
     "track",
     "video",
     "youtube",
+    "popular songs",
+    "released",
+    "recorded",
 }
+TRUSTED_MUSIC_SOURCES = (
+    "apple music",
+    "spotify",
+    "deezer",
+    "musicbrainz",
+    "shazam",
+    "youtube",
+    "officialcharts",
+    "genius",
+    "last.fm",
+)
 
 
 class ArtistSearchClient(ProviderClient):
@@ -92,6 +106,7 @@ class ArtistSearchClient(ProviderClient):
     @staticmethod
     def _clean_artist(value: str, title: str = "") -> str:
         cleaned = unescape(value or "")
+        cleaned = re.sub(r"^[\s\-*•·]+", "", cleaned)
         cleaned = re.split(
             r"\s+(?:-|–|—|\||•|·|:)\s+(?:YouTube|Spotify|Apple Music|Genius|Last\.fm|KaraFun|lyrics?|official)\b",
             cleaned,
@@ -117,6 +132,11 @@ class ArtistSearchClient(ProviderClient):
         if re.search(r"https?://|www\.|\.com\b", cleaned, flags=re.I):
             return ""
         return cleaned
+
+    @staticmethod
+    def _source_bonus(block: str) -> float:
+        normalized = normalize_text(block)
+        return 0.04 if any(source in normalized for source in TRUSTED_MUSIC_SOURCES) else 0.0
 
     @classmethod
     def _artists_from_block(cls, block: str, title: str) -> list[tuple[str, float, str]]:
@@ -159,11 +179,19 @@ class ArtistSearchClient(ProviderClient):
                 "artist_dash_title",
             ),
         ]
+        patterns.append(
+            (
+                rf'(?:^|[.!?]\s+|[•·]\s*)([^.\n\r|•·:]{{1,90}}?)\s*:\s*[^.\n\r]*(?:song|track|single|hit)\s+(?:called|named|titled)?\s*["\']?{title_pattern}["\']?',
+                0.87,
+                "artist_colon_title_context",
+            )
+        )
+        bonus = cls._source_bonus(block)
         for pattern, confidence, source in patterns:
             for match in re.finditer(pattern, block, flags=re.I):
                 artist = cls._clean_artist(match.group(1), title)
                 if artist:
-                    candidates.append((artist, confidence, source))
+                    candidates.append((artist, min(0.99, confidence + bonus), source))
         return candidates
 
     def _search_blocks(self, query: str) -> list[str]:
@@ -218,6 +246,8 @@ class ArtistSearchClient(ProviderClient):
             confidence = max(confidence, 0.90)
         elif runner_up and score - runner_up < 0.35:
             confidence = min(confidence, 0.74)
+        elif len(votes) >= 3 and runner_up and score - runner_up < 0.70:
+            confidence = min(confidence, 0.80)
 
         if confidence < self.min_confidence:
             return ProviderResult(

@@ -36,6 +36,7 @@ def test_enabled_defaults_to_union_of_all_stages(monkeypatch):
     # The exact free/web providers the old default omitted must now be enabled.
     # Paid providers stay paused unless PAID_STAGE_PROVIDERS explicitly names them.
     assert {"itunes", "deezer", "wikidata", "artist_search", "web_discovery", "rules_inference"} <= enabled
+    assert "artist_search" in settings.free_stage_providers
     assert "sonoteller" not in enabled
 
 

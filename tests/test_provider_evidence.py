@@ -322,6 +322,48 @@ def test_artist_search_extracts_karaoke_result_artist(tmp_path: Path, make_setti
     assert result.fields["artist"] == "The Weeknd"
 
 
+def test_artist_search_extracts_artist_colon_song_context():
+    block = '4*TOWN: Recorded the hit song "Nobody Like U" written for Turning Red. YouTube Spotify'
+
+    candidates = ArtistSearchClient._artists_from_block(block, "Nobody Like U")
+
+    assert ("4*TOWN", 0.91, "artist_colon_title_context") in candidates
+
+
+def test_artist_search_rejects_ambiguous_multi_artist_title(tmp_path: Path, make_settings):
+    settings = make_settings(
+        artist_search_enabled=True,
+        artist_search_endpoint="https://search.invalid",
+        artist_search_min_confidence=0.86,
+    )
+    client = ArtistSearchClient(Mock(), RateLimiter({}), settings)
+    client.session.get = Mock(
+        return_value=SimpleNamespace(
+            ok=True,
+            text=(
+                "<div>"
+                'Jordan Ramble: Released a song titled "Nobody Like You". '
+                'Yung Bleu: Released a track named "Nobody Like You". '
+                'Little Mix: Has a song titled "Nobody Like You".'
+                "</div>"
+            ),
+        )
+    )
+    media = MediaFile(
+        path=tmp_path / "Nobody Like You.mp4",
+        extension=".mp4",
+        size_bytes=1,
+        mtime=1.0,
+        tags={"title": "Nobody Like You", "artist": ""},
+    )
+
+    result = client.enrich(media)
+
+    assert result is not None
+    assert result.fields == {}
+    assert "below confidence threshold" in result.notes
+
+
 def test_local_ai_confidence_tracks_audio_evidence_strength():
     weak = LocalAIAudioClient._evidence_confidence(
         {"tags": [{"label": "pop", "score": 0.20}]},

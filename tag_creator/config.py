@@ -315,9 +315,9 @@ def load_settings() -> Settings:
     }
     free_stage = _list(
         "FREE_STAGE_PROVIDERS",
-        ["local_cleanup", "itunes", "deezer", "wikidata", "acoustid", "musicbrainz", "spotify", "lastfm", "discogs", "genius", "cover_art_archive"],
+        ["local_cleanup", "artist_search", "itunes", "deezer", "wikidata", "acoustid", "musicbrainz", "spotify", "lastfm", "discogs", "genius", "cover_art_archive"],
     )
-    web_stage = _list("WEB_STAGE_PROVIDERS", ["artist_search", "web_discovery", "rules_inference"])
+    web_stage = _list("WEB_STAGE_PROVIDERS", ["web_discovery", "rules_inference"])
     paid_stage = _list("PAID_STAGE_PROVIDERS", [])
     local_ai_stage = _list(
         "LOCAL_AI_STAGE_PROVIDERS",
