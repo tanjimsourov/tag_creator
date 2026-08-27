@@ -256,3 +256,17 @@ def test_split_pair_can_write_legacy_csv_when_requested(tmp_path: Path) -> None:
     )
 
     assert (tmp_path / "clean" / "input" / "DK Pop.csv").exists()
+
+
+def test_split_xlsx_writer_preserves_excel_time_text_as_plain_value(tmp_path: Path) -> None:
+    output = tmp_path / "out.xlsx"
+
+    split_module.write_csv_atomic(
+        output,
+        ["title", "time"],
+        [{"title": "Song", "time": '="00:03:16"'}],
+        overwrite=True,
+    )
+
+    _headers, rows = read_csv(output)
+    assert rows[0]["time"] == "00:03:16"

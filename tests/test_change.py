@@ -342,6 +342,19 @@ def test_output_path_defaults_to_xlsx() -> None:
     assert change_module.output_path_for(source, "_with_tag", ".csv") == Path("LH MP3_with_tag.csv")
 
 
+def test_xlsx_writer_preserves_excel_time_text_as_plain_value(tmp_path: Path) -> None:
+    output = tmp_path / "with_tag.xlsx"
+
+    change_module.write_tabular_atomic(
+        output,
+        ["title", "time"],
+        [{"title": "Song", "time": '="00:03:16"'}],
+    )
+
+    _headers, rows = change_module.read_tabular(output)
+    assert rows[0]["time"] == "00:03:16"
+
+
 def test_existing_vocal_fallback_is_reverified_from_audio(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("GENRE_API_ENABLED", "false")
     media = tmp_path / "Artist - Instrumental.mp4"

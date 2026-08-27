@@ -1576,6 +1576,13 @@ def excel_text(value: str) -> str:
     return f'="{value}"'
 
 
+def tabular_cell_text(value: object) -> str:
+    cleaned = clean_value(value)
+    if cleaned.startswith('="') and cleaned.endswith('"'):
+        return cleaned[2:-1]
+    return cleaned
+
+
 def boolean_flag(value: str, *, truthy_words: tuple[str, ...], default: str = "0") -> str:
     cleaned = clean_value(value).lower()
     if not cleaned:
@@ -1825,18 +1832,18 @@ def read_tabular(path: Path) -> tuple[list[str], list[dict[str, str]]]:
         except ImportError as exc:
             raise ValueError("openpyxl is required to read .xlsx files") from exc
 
-        workbook = load_workbook(path, read_only=True, data_only=True)
+        workbook = load_workbook(path, read_only=True, data_only=False)
         sheet = workbook[workbook.sheetnames[0]]
         rows = list(sheet.iter_rows(values_only=True))
         if not rows:
             raise ValueError(f"{path} has no CSV header")
-        fieldnames = [clean_value(value) for value in rows[0]]
+        fieldnames = [tabular_cell_text(value) for value in rows[0]]
         if not any(fieldnames):
             raise ValueError(f"{path} has no CSV header")
         records: list[dict[str, str]] = []
         for row in rows[1:]:
             record = {
-                fieldnames[index]: clean_value(row[index] if index < len(row) else "")
+                fieldnames[index]: tabular_cell_text(row[index] if index < len(row) else "")
                 for index in range(len(fieldnames))
                 if fieldnames[index]
             }
@@ -1866,7 +1873,7 @@ def write_tabular_atomic(path: Path, fieldnames: list[str], rows: list[dict[str,
         sheet.title = "WithTag"
         sheet.append(fieldnames)
         for row in rows:
-            sheet.append([row.get(field, "") for field in fieldnames])
+            sheet.append([tabular_cell_text(row.get(field, "")) for field in fieldnames])
 
         header_fill = PatternFill("solid", fgColor="1F4E78")
         header_font = Font(color="FFFFFF", bold=True)
