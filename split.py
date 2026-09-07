@@ -10,6 +10,8 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from pathlib import Path
 
+from tag_creator.missing_artist import MissingArtistResolver, repair_rows as repair_missing_artist_rows
+
 
 DEFAULT_INPUT_DIR = Path(os.getenv("OUTPUT_DIR", "output"))
 DEFAULT_OUTPUT_DIR = Path("clean")
@@ -404,6 +406,16 @@ def split_pair(
     source_headers, source_rows = read_csv(pair.source_path)
     tagged_headers, tagged_rows = read_csv(pair.tagged_path)
     existing_media_roots = tuple(root for root in media_roots if root.exists())
+    artist_stats = None
+    if "artist" in {normalize_header(header) for header in tagged_headers}:
+        artist_resolver = MissingArtistResolver(media_roots=existing_media_roots)
+        tagged_rows, tagged_headers, artist_stats = repair_missing_artist_rows(
+            tagged_rows,
+            tagged_headers,
+            resolver=artist_resolver,
+            csv_context=pair.source_path.stem,
+            remove_unresolved=True,
+        )
     group_index, skipped_missing_media = build_group_index(
         source_rows,
         source_headers,
@@ -431,6 +443,15 @@ def split_pair(
         print(f"removed stale split files: {removed_existing_files}")
     if skipped_missing_media:
         print(f"skipped source rows with missing media: {skipped_missing_media}")
+    if artist_stats and (
+        artist_stats.filled or artist_stats.removed_missing_identity or artist_stats.removed_unresolved_artist
+    ):
+        print(
+            "artist repair before split: "
+            f"filled={artist_stats.filled}, "
+            f"removed_missing_title_artist={artist_stats.removed_missing_identity}, "
+            f"removed_unresolved_artist={artist_stats.removed_unresolved_artist}"
+        )
     return written_rows, len(rows_by_group), unmatched_rows
 
 

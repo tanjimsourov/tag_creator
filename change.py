@@ -18,6 +18,7 @@ from tqdm import tqdm
 
 from tag_creator.genre_catalog import normalize_genre_name
 from tag_creator.matching import plausible_track_match
+from tag_creator.missing_artist import MissingArtistResolver, is_missing_artist_value, is_missing_title_value
 
 
 SOURCE_COLUMNS = ("subgenre", "mood", "moods", "weather", "season", "age_group")
@@ -1751,6 +1752,7 @@ def build_output_row(
     excel_time_text: bool = False,
     csv_context: str = "",
     genre_by_song: dict[str, str] | None = None,
+    artist_resolver: MissingArtistResolver | None = None,
 ) -> dict[str, str]:
     vocals = row_value(row, header_map, "vocal", "vocals")
     instrumental = row_value(row, header_map, "instrumental")
@@ -1771,6 +1773,18 @@ def build_output_row(
     )
     title = resolve_title(row, header_map, duration_resolver, csv_context)
     artist = resolve_artist(row, header_map, duration_resolver, csv_context)
+    if artist_resolver and is_missing_artist_value(artist) and not is_missing_title_value(title):
+        repaired_artist = artist_resolver.resolve(
+            title=title,
+            filename=filename_for_row(row, header_map),
+            file_path=row_value(row, header_map, "file_path", "path", "filepath"),
+            existing_artist=artist,
+            row=row,
+            header_map=header_map,
+            csv_context=csv_context,
+        )
+        if repaired_artist and repaired_artist.artist:
+            artist = repaired_artist.artist
     genre = resolve_single_genre(row, header_map, resolved_title=title, resolved_artist=artist)
     album = DEFAULT_ALBUM
     existing_language = row_value(row, header_map, "language")
@@ -1795,7 +1809,7 @@ def build_output_row(
     output_row = {
         "title": non_placeholder(title, fallback_from_filename(filename_for_row(row, header_map), "title")),
         "album": album,
-        "artist": non_placeholder(artist, fallback_from_filename(filename_for_row(row, header_map), "artist")),
+        "artist": non_placeholder(artist, ""),
         "time": excel_text(resolved_time) if excel_time_text else resolved_time,
         "genre": non_placeholder(genre, ""),
         "tempo": resolved_bpm,
@@ -1982,6 +1996,7 @@ def upgrade_csv(
     strict_facts: bool = False,
     show_progress: bool = False,
     language_resolver: MissingLanguageResolver | None = None,
+    artist_resolver: MissingArtistResolver | None = None,
 ) -> tuple[int, int]:
     source_headers, source_rows = read_tabular(input_path)
     normalized_headers = {normalize_header(header): header for header in source_headers}
@@ -2043,6 +2058,7 @@ def upgrade_csv(
                         excel_time_text=excel_time_text,
                         csv_context=csv_context,
                         genre_by_song=genre_by_song,
+                        artist_resolver=artist_resolver,
                     )
                     candidates.append((output_row_quality_score(output_row), -source_index, output_row))
                     progress.update(1)
@@ -2052,6 +2068,18 @@ def upgrade_csv(
                 output_row = max(candidates, key=lambda candidate: (candidate[0], candidate[1]))[2]
                 identity = output_identity_key(output_row)
                 if identity in seen_output_rows:
+                    continue
+                if is_missing_title_value(output_row.get("title", "")) and is_missing_artist_value(
+                    output_row.get("artist", "")
+                ):
+                    removed.append(
+                        f"{output_row.get('filename') or output_row.get('title')}: title and artist not verified"
+                    )
+                    continue
+                if is_missing_artist_value(output_row.get("artist", "")):
+                    removed.append(
+                        f"{output_row.get('filename') or output_row.get('title')}: artist not verified after repair"
+                    )
                     continue
                 seen_output_rows.add(identity)
                 issues = []
@@ -2167,6 +2195,7 @@ def main() -> int:
         return 0
 
     duration_resolver = MediaDurationResolver([Path(root) for root in args.media_root])
+    artist_resolver = MissingArtistResolver(media_roots=[Path(root) for root in args.media_root])
     language_resolver = MissingLanguageResolver(
         enabled=os.getenv("MISSING_LANGUAGE_LOOKUP_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
     )
@@ -2185,6 +2214,7 @@ def main() -> int:
                 strict_facts=not args.allow_unresolved_facts,
                 show_progress=True,
                 language_resolver=language_resolver,
+                artist_resolver=artist_resolver,
             )
         except ValueError as exc:
             print(f"failed: {csv_path}\n{exc}")
