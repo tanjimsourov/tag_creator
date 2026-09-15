@@ -10,8 +10,15 @@ from pathlib import Path
 
 LOGGER = logging.getLogger(__name__)
 
-DEFAULT_NORMALIZATION_DIR_NAME = "normalization"
-EXCLUDED_NORMALIZATION_DIR_NAMES = {"normalized", DEFAULT_NORMALIZATION_DIR_NAME}
+DEFAULT_MP3_NORMALIZATION_DIR_NAME = "normalization-mp3"
+DEFAULT_MP4_NORMALIZATION_DIR_NAME = "normalization-mp4"
+LEGACY_NORMALIZATION_DIR_NAME = "normalization"
+EXCLUDED_NORMALIZATION_DIR_NAMES = {
+    "normalized",
+    LEGACY_NORMALIZATION_DIR_NAME,
+    DEFAULT_MP3_NORMALIZATION_DIR_NAME,
+    DEFAULT_MP4_NORMALIZATION_DIR_NAME,
+}
 
 
 def normalization_enabled() -> bool:
@@ -30,8 +37,10 @@ def _float_from_env(name: str, default: float) -> float:
         return default
 
 
-def _normalization_dir_for(path: Path) -> Path:
-    return path.parent / os.getenv("MEDIA_NORMALIZATION_DIR_NAME", DEFAULT_NORMALIZATION_DIR_NAME).strip()
+def _normalization_dir_for(path: Path, env_name: str, default: str) -> Path:
+    legacy = os.getenv("MEDIA_NORMALIZATION_DIR_NAME", "").strip()
+    directory_name = os.getenv(env_name, "").strip() or legacy or default
+    return path.parent / directory_name
 
 
 def _is_inside_excluded_dir(path: Path, input_dir: Path) -> bool:
@@ -60,6 +69,16 @@ def _mp3_files(input_dir: Path) -> list[Path]:
     return files
 
 
+def _mp4_files(input_dir: Path) -> list[Path]:
+    files = [
+        path
+        for path in input_dir.rglob("*.mp4")
+        if path.is_file() and not _is_inside_excluded_dir(path, input_dir)
+    ]
+    files.sort()
+    return files
+
+
 def _needs_update(source: Path, target: Path) -> bool:
     if not target.exists() or target.stat().st_size == 0:
         return True
@@ -68,6 +87,10 @@ def _needs_update(source: Path, target: Path) -> bool:
 
 def _ffmpeg_path() -> str:
     return os.getenv("FFMPEG_PATH", "ffmpeg").strip() or "ffmpeg"
+
+
+def _ffprobe_path() -> str:
+    return os.getenv("FFPROBE_PATH", "ffprobe").strip() or "ffprobe"
 
 
 def _loudnorm_measure(source: Path, target_lufs: float, true_peak: float, lra: float) -> dict[str, str] | None:
@@ -156,6 +179,95 @@ def normalize_mp3_file(source: Path, target: Path) -> bool:
     return True
 
 
+def _mp4_normalization_enabled() -> bool:
+    return os.getenv("MEDIA_NORMALIZATION_MP4_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _has_audio_stream(source: Path) -> bool:
+    command = [
+        _ffprobe_path(),
+        "-v",
+        "error",
+        "-select_streams",
+        "a",
+        "-show_entries",
+        "stream=index",
+        "-of",
+        "csv=p=0",
+        str(source),
+    ]
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=60, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        LOGGER.warning("mp4 normalization probe could not run for %s: %s", source, exc)
+        return False
+    if completed.returncode != 0:
+        LOGGER.warning("mp4 normalization probe failed for %s: %s", source, (completed.stderr or "").strip())
+        return False
+    return bool((completed.stdout or "").strip())
+
+
+def normalize_mp4_file(source: Path, target: Path) -> bool:
+    if not _has_audio_stream(source):
+        LOGGER.info("mp4 normalization skipped no-audio file: %s", source)
+        return False
+
+    target_lufs = _float_from_env("MEDIA_NORMALIZATION_MP4_TARGET_LUFS", -14.0)
+    true_peak = _float_from_env("MEDIA_NORMALIZATION_MP4_TRUE_PEAK", -1.0)
+    lra = _float_from_env("MEDIA_NORMALIZATION_MP4_LRA", 11.0)
+    bitrate = os.getenv("MEDIA_NORMALIZATION_MP4_AUDIO_BITRATE", "256k").strip() or "256k"
+    temporary_target = target.with_name(f".{target.stem}.tmp{target.suffix}")
+    command = [
+        _ffmpeg_path(),
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        str(source),
+        "-map",
+        "0:v?",
+        "-map",
+        "0:a?",
+        "-map",
+        "0:s?",
+        "-map_metadata",
+        "0",
+        "-map_chapters",
+        "0",
+        "-c:v",
+        "copy",
+        "-c:s",
+        "copy",
+        "-c:a",
+        "aac",
+        "-b:a",
+        bitrate,
+        "-ar",
+        "48000",
+        "-filter:a",
+        f"loudnorm=I={target_lufs:.1f}:TP={true_peak:.1f}:LRA={lra:.1f}",
+        "-movflags",
+        "+faststart",
+        "-f",
+        "mp4",
+        str(temporary_target),
+    ]
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=900, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        temporary_target.unlink(missing_ok=True)
+        LOGGER.warning("mp4 normalization could not run for %s: %s", source, exc)
+        return False
+    if completed.returncode != 0 or not temporary_target.exists() or temporary_target.stat().st_size == 0:
+        temporary_target.unlink(missing_ok=True)
+        LOGGER.warning("mp4 normalization failed for %s: %s", source, (completed.stderr or completed.stdout or "").strip())
+        return False
+    temporary_target.replace(target)
+    shutil.copystat(source, target)
+    return True
+
+
 def normalize_mp3_directories(input_dir: Path) -> tuple[int, int]:
     if not normalization_enabled():
         return 0, 0
@@ -169,7 +281,11 @@ def normalize_mp3_directories(input_dir: Path) -> tuple[int, int]:
     created = 0
     skipped = 0
     for source in files:
-        target_dir = _normalization_dir_for(source)
+        target_dir = _normalization_dir_for(
+            source,
+            "MEDIA_NORMALIZATION_MP3_DIR_NAME",
+            DEFAULT_MP3_NORMALIZATION_DIR_NAME,
+        )
         target = target_dir / source.name
         if not _needs_update(source, target):
             skipped += 1
@@ -188,3 +304,47 @@ def normalize_mp3_directories(input_dir: Path) -> tuple[int, int]:
     if created or skipped:
         LOGGER.info("mp3 normalization complete: normalized=%s skipped=%s input=%s", created, skipped, input_dir)
     return created, skipped
+
+
+def normalize_mp4_directories(input_dir: Path) -> tuple[int, int]:
+    if not normalization_enabled() or not _mp4_normalization_enabled():
+        return 0, 0
+    if not input_dir.exists():
+        return 0, 0
+
+    files = _mp4_files(input_dir)
+    if not files:
+        return 0, 0
+
+    created = 0
+    skipped = 0
+    for source in files:
+        target_dir = _normalization_dir_for(
+            source,
+            "MEDIA_NORMALIZATION_MP4_DIR_NAME",
+            DEFAULT_MP4_NORMALIZATION_DIR_NAME,
+        )
+        target = target_dir / source.name
+        if not _needs_update(source, target):
+            skipped += 1
+            continue
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            LOGGER.warning("mp4 normalization folder cannot be created for %s: %s", source.parent, exc)
+            skipped += 1
+            continue
+        if normalize_mp4_file(source, target):
+            created += 1
+        else:
+            skipped += 1
+
+    if created or skipped:
+        LOGGER.info("mp4 normalization complete: normalized=%s skipped=%s input=%s", created, skipped, input_dir)
+    return created, skipped
+
+
+def normalize_media_directories(input_dir: Path) -> tuple[tuple[int, int], tuple[int, int]]:
+    mp3_stats = normalize_mp3_directories(input_dir)
+    mp4_stats = normalize_mp4_directories(input_dir)
+    return mp3_stats, mp4_stats

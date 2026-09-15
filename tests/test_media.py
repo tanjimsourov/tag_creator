@@ -6,19 +6,25 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from tag_creator.media import read_media_file, scan_media_files, write_tags
-from tag_creator.normalization import normalize_mp3_directories
+from tag_creator.normalization import normalize_media_directories, normalize_mp3_directories
 
 
 def test_scan_media_files_ignores_normalized_folder(tmp_path):
     real_file = tmp_path / "Germany Charts 2026" / "Track.mp4"
     normalized_file = tmp_path / "normalized" / "Track.mp4"
     normalization_file = tmp_path / "normalization" / "Track.mp4"
+    mp3_normalization_file = tmp_path / "normalization-mp3" / "Track.mp3"
+    mp4_normalization_file = tmp_path / "normalization-mp4" / "Track.mp4"
     real_file.parent.mkdir(parents=True)
     normalized_file.parent.mkdir(parents=True)
     normalization_file.parent.mkdir(parents=True)
+    mp3_normalization_file.parent.mkdir(parents=True)
+    mp4_normalization_file.parent.mkdir(parents=True)
     real_file.write_bytes(b"mp4")
     normalized_file.write_bytes(b"mp4")
     normalization_file.write_bytes(b"mp4")
+    mp3_normalization_file.write_bytes(b"mp3")
+    mp4_normalization_file.write_bytes(b"mp4")
 
     assert scan_media_files(tmp_path, [".mp4"]) == [real_file]
 
@@ -51,8 +57,41 @@ def test_normalize_mp3_directories_writes_copies_next_to_source(tmp_path, monkey
 
     assert created == 1
     assert skipped == 0
-    assert (source.parent / "normalization" / "Track.mp3").read_bytes() == b"normalized"
+    assert (source.parent / "normalization-mp3" / "Track.mp3").read_bytes() == b"normalized"
     assert len(commands) == 2
+
+
+def test_normalize_media_directories_writes_mp3_and_mp4_outputs(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEDIA_NORMALIZATION_ENABLED", "true")
+    source_mp3 = tmp_path / "Mixed" / "Track.mp3"
+    source_mp4 = tmp_path / "Mixed" / "Clip.mp4"
+    source_mp3.parent.mkdir(parents=True)
+    source_mp3.write_bytes(b"mp3")
+    source_mp4.write_bytes(b"mp4")
+
+    commands: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        commands.append(command)
+        if "ffprobe" in command[0]:
+            return SimpleNamespace(returncode=0, stdout="0\n", stderr="")
+        if "-f" in command and "null" in command:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="",
+                stderr='{"input_i":"-22.0","input_tp":"-2.0","input_lra":"7.0","input_thresh":"-32.0","target_offset":"4.0"}',
+            )
+        Path(command[-1]).write_bytes(b"normalized")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("tag_creator.normalization.subprocess.run", fake_run)
+
+    mp3_stats, mp4_stats = normalize_media_directories(tmp_path)
+
+    assert mp3_stats == (1, 0)
+    assert mp4_stats == (1, 0)
+    assert (source_mp3.parent / "normalization-mp3" / "Track.mp3").read_bytes() == b"normalized"
+    assert (source_mp4.parent / "normalization-mp4" / "Clip.mp4").read_bytes() == b"normalized"
 
 
 def test_write_and_read_back_mp3(sample_mp3):
