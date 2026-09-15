@@ -125,6 +125,11 @@ if ($InputFolders.Count -eq 0) {
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 New-Item -ItemType Directory -Force -Path $CleanDir | Out-Null
 
+Write-Host "Selected folders: $($InputFolders.Count)" -ForegroundColor Cyan
+Write-Host "Output dir: $OutputDir" -ForegroundColor Cyan
+Write-Host "Clean dir: $CleanDir" -ForegroundColor Cyan
+Write-Host "Note: main CSV rows start increasing after normalization finishes for each folder." -ForegroundColor Yellow
+
 $Failed = 0
 foreach ($INPUT_DIR in $InputFolders) {
   if (!(Test-Path -LiteralPath $INPUT_DIR)) {
@@ -146,6 +151,9 @@ foreach ($INPUT_DIR in $InputFolders) {
   Write-Host "############################################################" -ForegroundColor Green
   Write-Host "Processing: $INPUT_NAME" -ForegroundColor Green
   Write-Host "Source: $INPUT_DIR" -ForegroundColor Green
+  Write-Host "Main CSV: $MainCsv" -ForegroundColor Green
+  Write-Host "With-tag XLSX: $WithTag" -ForegroundColor Green
+  Write-Host "Clean output: $(Join-Path $CleanDir $INPUT_NAME)" -ForegroundColor Green
   Write-Host "############################################################" -ForegroundColor Green
 
   $mainOk = Run-Step "$INPUT_NAME - Main CSV + normalization" {
@@ -154,6 +162,9 @@ foreach ($INPUT_DIR in $InputFolders) {
       "--env", "INPUT_DIR=/app/input_media",
       "--env", "OUTPUT_DIR=/app/output",
       "--env", "LOCAL_AI_MODELS_DIR=/app/models/local_ai",
+      "--env", "PYTHONUNBUFFERED=1",
+      "--env", "TF_CPP_MIN_LOG_LEVEL=2",
+      "--env", "CUDA_VISIBLE_DEVICES=-1",
       "--tmpfs", "/app/data", "--tmpfs", "/app/logs",
       "-v", "${INPUT_DIR}:/app/input_media",
       "-v", "${OutputDir}:/app/output",

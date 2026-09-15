@@ -8,6 +8,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from tqdm import tqdm
+
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_MP3_NORMALIZATION_DIR_NAME = "normalization-mp3"
@@ -276,11 +278,13 @@ def normalize_mp3_directories(input_dir: Path) -> tuple[int, int]:
 
     files = _mp3_files(input_dir)
     if not files:
+        LOGGER.info("mp3 normalization: no mp3 files found in %s", input_dir)
         return 0, 0
 
+    LOGGER.info("mp3 normalization: found %s file(s) in %s", len(files), input_dir)
     created = 0
     skipped = 0
-    for source in files:
+    for source in tqdm(files, desc="Normalizing MP3", unit="file", dynamic_ncols=True):
         target_dir = _normalization_dir_for(
             source,
             "MEDIA_NORMALIZATION_MP3_DIR_NAME",
@@ -314,11 +318,13 @@ def normalize_mp4_directories(input_dir: Path) -> tuple[int, int]:
 
     files = _mp4_files(input_dir)
     if not files:
+        LOGGER.info("mp4 normalization: no mp4 files found in %s", input_dir)
         return 0, 0
 
+    LOGGER.info("mp4 normalization: found %s file(s) in %s", len(files), input_dir)
     created = 0
     skipped = 0
-    for source in files:
+    for source in tqdm(files, desc="Normalizing MP4", unit="file", dynamic_ncols=True):
         target_dir = _normalization_dir_for(
             source,
             "MEDIA_NORMALIZATION_MP4_DIR_NAME",
@@ -345,6 +351,14 @@ def normalize_mp4_directories(input_dir: Path) -> tuple[int, int]:
 
 
 def normalize_media_directories(input_dir: Path) -> tuple[tuple[int, int], tuple[int, int]]:
+    LOGGER.info("media normalization starting: %s", input_dir)
     mp3_stats = normalize_mp3_directories(input_dir)
     mp4_stats = normalize_mp4_directories(input_dir)
+    LOGGER.info(
+        "media normalization finished: mp3 normalized=%s skipped=%s; mp4 normalized=%s skipped=%s",
+        mp3_stats[0],
+        mp3_stats[1],
+        mp4_stats[0],
+        mp4_stats[1],
+    )
     return mp3_stats, mp4_stats
