@@ -131,6 +131,38 @@ def test_mp3gain_failure_falls_back_to_ffmpeg_loudnorm(tmp_path, monkeypatch):
     assert (tmp_path / "normalization-mp3" / "Music" / "Track.mp3").read_bytes() == b"ffmpeg-normalized"
 
 
+def test_mp3gain_failure_repairs_mp3_then_retries_mp3gain(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEDIA_NORMALIZATION_ENABLED", "true")
+    monkeypatch.setenv("MEDIA_NORMALIZATION_MP3_MODE", "mp3gain")
+    monkeypatch.setenv("MEDIA_NORMALIZATION_MP3_REPAIR_WITH_FFMPEG", "true")
+    source = tmp_path / "Music" / "Track.mp3"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"mp3")
+
+    commands: list[list[str]] = []
+    mp3gain_calls = 0
+
+    def fake_run(command, **_kwargs):
+        nonlocal mp3gain_calls
+        commands.append(command)
+        if command[0] == "mp3gain":
+            mp3gain_calls += 1
+            if mp3gain_calls == 1:
+                return SimpleNamespace(returncode=1, stdout="", stderr="bad mp3 frame")
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        Path(command[-1]).write_bytes(b"repaired-mp3")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("tag_creator.normalization.subprocess.run", fake_run)
+    monkeypatch.setattr("tag_creator.normalization.shutil.which", lambda _value: "mp3gain")
+
+    created, skipped = normalize_mp3_directories(tmp_path)
+
+    assert (created, skipped) == (1, 0)
+    assert [command[0] for command in commands] == ["mp3gain", "ffmpeg", "mp3gain"]
+    assert (tmp_path / "normalization-mp3" / "Music" / "Track.mp3").read_bytes() == b"repaired-mp3"
+
+
 def test_normalize_mp3_cleans_old_normalization_json_sidecars(tmp_path, monkeypatch):
     monkeypatch.setenv("MEDIA_NORMALIZATION_ENABLED", "true")
     monkeypatch.setenv("MEDIA_NORMALIZATION_MP3_MODE", "mp3gain")

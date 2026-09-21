@@ -28,9 +28,26 @@ def normalization_enabled() -> bool:
     return os.getenv("MEDIA_NORMALIZATION_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _bool_from_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in {"1", "true", "yes", "on"}
+
+
 def target_lufs_from_db(target_db: float) -> float:
     # ReplayGain/MP3Gain's 89 dB reference corresponds approximately to -18 LUFS.
     return target_db - 107.0
+
+
+def _mp4_target_lufs_from_env() -> float:
+    configured = os.getenv("MEDIA_NORMALIZATION_MP4_TARGET_LUFS", "").strip()
+    if configured:
+        try:
+            return float(configured)
+        except ValueError:
+            pass
+    return target_lufs_from_db(_float_from_env("MEDIA_NORMALIZATION_TARGET_DB", 89.0))
 
 
 def _float_from_env(name: str, default: float) -> float:
@@ -287,6 +304,44 @@ def _normalize_mp3_with_mp3gain(source: Path, target: Path, target_db: float) ->
     return True
 
 
+def _repair_mp3_for_mp3gain(source: Path, target: Path) -> Path | None:
+    bitrate = os.getenv("MEDIA_NORMALIZATION_MP3_BITRATE", "320k").strip() or "320k"
+    repaired = target.with_name(f".{target.stem}.repair{target.suffix}")
+    repaired.unlink(missing_ok=True)
+    command = [
+        _ffmpeg_path(),
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-i",
+        str(source),
+        "-map",
+        "0:a:0",
+        "-vn",
+        "-codec:a",
+        "libmp3lame",
+        "-b:a",
+        bitrate,
+        "-map_metadata",
+        "0",
+        "-f",
+        "mp3",
+        str(repaired),
+    ]
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=360, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        repaired.unlink(missing_ok=True)
+        LOGGER.warning("mp3 repair could not run for %s: %s", source, exc)
+        return None
+    if completed.returncode != 0 or not repaired.exists() or repaired.stat().st_size == 0:
+        repaired.unlink(missing_ok=True)
+        LOGGER.warning("mp3 repair failed for %s: %s", source, (completed.stderr or completed.stdout or "").strip())
+        return None
+    return repaired
+
+
 def _normalize_mp3_with_ffmpeg_loudnorm(source: Path, target: Path, target_db: float) -> bool:
     target_lufs = target_lufs_from_db(target_db)
     true_peak = _float_from_env("MEDIA_NORMALIZATION_TRUE_PEAK", -1.5)
@@ -346,6 +401,19 @@ def normalize_mp3_file(source: Path, target: Path) -> bool:
     if mode in {"mp3gain", "mp3_gain", "replaygain", "replay_gain"}:
         if _normalize_mp3_with_mp3gain(source, target, target_db):
             return True
+        if _bool_from_env("MEDIA_NORMALIZATION_MP3_REPAIR_WITH_FFMPEG", True):
+            LOGGER.warning(
+                "mp3gain failed for %s; repairing MP3 with FFmpeg and retrying mp3gain.",
+                source,
+            )
+            repaired = _repair_mp3_for_mp3gain(source, target)
+            if repaired is not None:
+                try:
+                    if _normalize_mp3_with_mp3gain(repaired, target, target_db):
+                        shutil.copystat(source, target)
+                        return True
+                finally:
+                    repaired.unlink(missing_ok=True)
         fallback = os.getenv("MEDIA_NORMALIZATION_MP3_FALLBACK", "ffmpeg").strip().lower()
         if fallback in {"1", "true", "yes", "on", "ffmpeg", "loudnorm", "ffmpeg_loudnorm"}:
             LOGGER.warning(
@@ -399,7 +467,7 @@ def normalize_mp4_file(source: Path, target: Path) -> bool:
         LOGGER.info("mp4 normalization skipped no-audio file: %s", source)
         return False
 
-    target_lufs = _float_from_env("MEDIA_NORMALIZATION_MP4_TARGET_LUFS", -14.0)
+    target_lufs = _mp4_target_lufs_from_env()
     true_peak = _float_from_env("MEDIA_NORMALIZATION_MP4_TRUE_PEAK", -1.0)
     lra = _float_from_env("MEDIA_NORMALIZATION_MP4_LRA", 11.0)
     bitrate = os.getenv("MEDIA_NORMALIZATION_MP4_AUDIO_BITRATE", "256k").strip() or "256k"
