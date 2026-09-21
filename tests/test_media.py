@@ -31,6 +31,7 @@ def test_scan_media_files_ignores_normalized_folder(tmp_path):
 
 def test_normalize_mp3_directories_writes_copies_next_to_source(tmp_path, monkeypatch):
     monkeypatch.setenv("MEDIA_NORMALIZATION_ENABLED", "true")
+    monkeypatch.setenv("MEDIA_NORMALIZATION_MP3_MODE", "mp3gain")
     source = tmp_path / "Local Hero MP3" / "Track.mp3"
     skipped_source = tmp_path / "Local Hero MP3" / "normalization" / "Existing.mp3"
     source.parent.mkdir(parents=True)
@@ -42,27 +43,26 @@ def test_normalize_mp3_directories_writes_copies_next_to_source(tmp_path, monkey
 
     def fake_run(command, **_kwargs):
         commands.append(command)
-        if "-f" in command and "null" in command:
-            return SimpleNamespace(
-                returncode=0,
-                stdout="",
-                stderr='{"input_i":"-22.0","input_tp":"-2.0","input_lra":"7.0","input_thresh":"-32.0","target_offset":"4.0"}',
-            )
-        Path(command[-1]).write_bytes(b"normalized")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr("tag_creator.normalization.subprocess.run", fake_run)
+    monkeypatch.setattr("tag_creator.normalization.shutil.which", lambda _value: "mp3gain")
 
     created, skipped = normalize_mp3_directories(tmp_path)
 
     assert created == 1
     assert skipped == 0
-    assert (source.parent / "normalization-mp3" / "Track.mp3").read_bytes() == b"normalized"
-    assert len(commands) == 2
+    target = source.parent / "normalization-mp3" / "Track.mp3"
+    assert target.read_bytes() == b"mp3"
+    assert (source.parent / "normalization-mp3" / "Track.mp3.normalization.json").exists()
+    assert len(commands) == 1
+    assert commands[0][0] == "mp3gain"
+    assert "-d" in commands[0]
 
 
 def test_normalize_media_directories_writes_mp3_and_mp4_outputs(tmp_path, monkeypatch):
     monkeypatch.setenv("MEDIA_NORMALIZATION_ENABLED", "true")
+    monkeypatch.setenv("MEDIA_NORMALIZATION_MP3_MODE", "mp3gain")
     source_mp3 = tmp_path / "Mixed" / "Track.mp3"
     source_mp4 = tmp_path / "Mixed" / "Clip.mp4"
     source_mp3.parent.mkdir(parents=True)
@@ -73,6 +73,8 @@ def test_normalize_media_directories_writes_mp3_and_mp4_outputs(tmp_path, monkey
 
     def fake_run(command, **_kwargs):
         commands.append(command)
+        if command[0] == "mp3gain":
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
         if "ffprobe" in command[0]:
             return SimpleNamespace(returncode=0, stdout="0\n", stderr="")
         if "-f" in command and "null" in command:
@@ -85,13 +87,40 @@ def test_normalize_media_directories_writes_mp3_and_mp4_outputs(tmp_path, monkey
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr("tag_creator.normalization.subprocess.run", fake_run)
+    monkeypatch.setattr("tag_creator.normalization.shutil.which", lambda value: "mp3gain" if value == "mp3gain" else value)
 
     mp3_stats, mp4_stats = normalize_media_directories(tmp_path)
 
     assert mp3_stats == (1, 0)
     assert mp4_stats == (1, 0)
-    assert (source_mp3.parent / "normalization-mp3" / "Track.mp3").read_bytes() == b"normalized"
+    assert (source_mp3.parent / "normalization-mp3" / "Track.mp3").read_bytes() == b"mp3"
     assert (source_mp4.parent / "normalization-mp4" / "Clip.mp4").read_bytes() == b"normalized"
+
+
+def test_normalize_mp3_reruns_old_output_without_metadata(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEDIA_NORMALIZATION_ENABLED", "true")
+    monkeypatch.setenv("MEDIA_NORMALIZATION_MP3_MODE", "mp3gain")
+    source = tmp_path / "Local Hero MP3" / "Track.mp3"
+    target = source.parent / "normalization-mp3" / "Track.mp3"
+    source.parent.mkdir(parents=True)
+    target.parent.mkdir(parents=True)
+    source.write_bytes(b"mp3")
+    target.write_bytes(b"old-normalized")
+
+    commands: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        commands.append(command)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("tag_creator.normalization.subprocess.run", fake_run)
+    monkeypatch.setattr("tag_creator.normalization.shutil.which", lambda _value: "mp3gain")
+
+    created, skipped = normalize_mp3_directories(tmp_path)
+
+    assert (created, skipped) == (1, 0)
+    assert commands
+    assert target.read_bytes() == b"mp3"
 
 
 def test_write_and_read_back_mp3(sample_mp3):

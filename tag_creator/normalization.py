@@ -15,6 +15,10 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_MP3_NORMALIZATION_DIR_NAME = "normalization-mp3"
 DEFAULT_MP4_NORMALIZATION_DIR_NAME = "normalization-mp4"
 LEGACY_NORMALIZATION_DIR_NAME = "normalization"
+MP3GAIN_REFERENCE_DB = 89.0
+MP3_NORMALIZATION_VERSION = "mp3gain-89db-v1"
+MP3_LOUDNORM_VERSION = "ffmpeg-loudnorm-v1"
+MP4_NORMALIZATION_VERSION = "ffmpeg-mp4-loudnorm-v1"
 EXCLUDED_NORMALIZATION_DIR_NAMES = {
     "normalized",
     LEGACY_NORMALIZATION_DIR_NAME,
@@ -87,12 +91,62 @@ def _needs_update(source: Path, target: Path) -> bool:
     return source.stat().st_mtime > target.stat().st_mtime
 
 
+def _metadata_path(target: Path) -> Path:
+    return target.with_name(f"{target.name}.normalization.json")
+
+
+def _normalization_metadata(source: Path, *, mode: str, target: float) -> dict[str, object]:
+    return {
+        "version": mode,
+        "target": round(float(target), 3),
+        "source_name": source.name,
+        "source_size": source.stat().st_size,
+        "source_mtime": source.stat().st_mtime,
+    }
+
+
+def _metadata_matches(source: Path, target: Path, *, mode: str, target_value: float) -> bool:
+    metadata_file = _metadata_path(target)
+    if not metadata_file.exists():
+        return False
+    try:
+        data = json.loads(metadata_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    expected = _normalization_metadata(source, mode=mode, target=target_value)
+    return all(data.get(key) == value for key, value in expected.items())
+
+
+def _needs_normalization(source: Path, target: Path, *, mode: str, target_value: float) -> bool:
+    if _needs_update(source, target):
+        return True
+    return not _metadata_matches(source, target, mode=mode, target_value=target_value)
+
+
+def _write_metadata(source: Path, target: Path, *, mode: str, target_value: float) -> None:
+    metadata_file = _metadata_path(target)
+    payload = _normalization_metadata(source, mode=mode, target=target_value)
+    try:
+        metadata_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as exc:
+        LOGGER.warning("normalization metadata could not be written for %s: %s", target, exc)
+
+
 def _ffmpeg_path() -> str:
     return os.getenv("FFMPEG_PATH", "ffmpeg").strip() or "ffmpeg"
 
 
 def _ffprobe_path() -> str:
     return os.getenv("FFPROBE_PATH", "ffprobe").strip() or "ffprobe"
+
+
+def _mp3gain_path() -> str:
+    configured = os.getenv("MP3GAIN_PATH", "mp3gain").strip() or "mp3gain"
+    configured_path = Path(configured)
+    if configured_path.is_file():
+        return str(configured_path)
+    resolved = shutil.which(configured)
+    return resolved or ""
 
 
 def _loudnorm_measure(source: Path, target_lufs: float, true_peak: float, lra: float) -> dict[str, str] | None:
@@ -127,8 +181,61 @@ def _loudnorm_measure(source: Path, target_lufs: float, true_peak: float, lra: f
     return {key: str(data.get(key, "")) for key in required if str(data.get(key, "")).strip()}
 
 
-def normalize_mp3_file(source: Path, target: Path) -> bool:
-    target_db = _float_from_env("MEDIA_NORMALIZATION_TARGET_DB", 89.0)
+def _normalize_mp3_with_mp3gain(source: Path, target: Path, target_db: float) -> bool:
+    mp3gain = _mp3gain_path()
+    if not mp3gain:
+        LOGGER.warning(
+            "mp3gain is required for exact 89 dB MP3 normalization but was not found. "
+            "Install mp3gain in the Docker image or set MP3GAIN_PATH."
+        )
+        return False
+
+    temporary_target = target.with_name(f".{target.stem}.tmp{target.suffix}")
+    temporary_target.unlink(missing_ok=True)
+    try:
+        shutil.copy2(source, temporary_target)
+    except OSError as exc:
+        LOGGER.warning("mp3gain normalization could not copy %s: %s", source, exc)
+        return False
+
+    target_delta = target_db - MP3GAIN_REFERENCE_DB
+    avoid_clipping = os.getenv("MEDIA_NORMALIZATION_MP3_AVOID_CLIPPING", "false").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    command = [
+        mp3gain,
+        "-r",
+        "-c",
+        "-s",
+        "i",
+        "-d",
+        f"{target_delta:.1f}",
+    ]
+    if avoid_clipping:
+        command.append("-k")
+    command.append(str(temporary_target))
+
+    try:
+        completed = subprocess.run(command, capture_output=True, text=True, timeout=360, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        temporary_target.unlink(missing_ok=True)
+        LOGGER.warning("mp3gain normalization could not run for %s: %s", source, exc)
+        return False
+    if completed.returncode != 0 or not temporary_target.exists() or temporary_target.stat().st_size == 0:
+        temporary_target.unlink(missing_ok=True)
+        LOGGER.warning("mp3gain normalization failed for %s: %s", source, (completed.stderr or completed.stdout or "").strip())
+        return False
+
+    temporary_target.replace(target)
+    shutil.copystat(source, target)
+    _write_metadata(source, target, mode=MP3_NORMALIZATION_VERSION, target_value=target_db)
+    return True
+
+
+def _normalize_mp3_with_ffmpeg_loudnorm(source: Path, target: Path, target_db: float) -> bool:
     target_lufs = target_lufs_from_db(target_db)
     true_peak = _float_from_env("MEDIA_NORMALIZATION_TRUE_PEAK", -1.5)
     lra = _float_from_env("MEDIA_NORMALIZATION_LRA", 11.0)
@@ -178,7 +285,24 @@ def normalize_mp3_file(source: Path, target: Path) -> bool:
         return False
     temporary_target.replace(target)
     shutil.copystat(source, target)
+    _write_metadata(source, target, mode=MP3_LOUDNORM_VERSION, target_value=target_db)
     return True
+
+
+def normalize_mp3_file(source: Path, target: Path) -> bool:
+    target_db = _float_from_env("MEDIA_NORMALIZATION_TARGET_DB", 89.0)
+    mode = os.getenv("MEDIA_NORMALIZATION_MP3_MODE", "mp3gain").strip().lower()
+    if mode in {"mp3gain", "mp3_gain", "replaygain", "replay_gain"}:
+        return _normalize_mp3_with_mp3gain(source, target, target_db)
+    if mode in {"ffmpeg", "loudnorm", "ffmpeg_loudnorm"}:
+        LOGGER.warning(
+            "MEDIA_NORMALIZATION_MP3_MODE=%s uses LUFS, not MP3Gain 89 dB. "
+            "Use MEDIA_NORMALIZATION_MP3_MODE=mp3gain for exact MP3Gain-style target.",
+            mode,
+        )
+        return _normalize_mp3_with_ffmpeg_loudnorm(source, target, target_db)
+    LOGGER.warning("unknown MEDIA_NORMALIZATION_MP3_MODE=%s; expected mp3gain or ffmpeg_loudnorm", mode)
+    return False
 
 
 def _mp4_normalization_enabled() -> bool:
@@ -267,6 +391,7 @@ def normalize_mp4_file(source: Path, target: Path) -> bool:
         return False
     temporary_target.replace(target)
     shutil.copystat(source, target)
+    _write_metadata(source, target, mode=MP4_NORMALIZATION_VERSION, target_value=target_lufs)
     return True
 
 
@@ -291,7 +416,10 @@ def normalize_mp3_directories(input_dir: Path) -> tuple[int, int]:
             DEFAULT_MP3_NORMALIZATION_DIR_NAME,
         )
         target = target_dir / source.name
-        if not _needs_update(source, target):
+        target_db = _float_from_env("MEDIA_NORMALIZATION_TARGET_DB", 89.0)
+        mp3_mode = os.getenv("MEDIA_NORMALIZATION_MP3_MODE", "mp3gain").strip().lower()
+        mode_version = MP3_NORMALIZATION_VERSION if mp3_mode in {"mp3gain", "mp3_gain", "replaygain", "replay_gain"} else MP3_LOUDNORM_VERSION
+        if not _needs_normalization(source, target, mode=mode_version, target_value=target_db):
             skipped += 1
             continue
         try:
@@ -331,7 +459,8 @@ def normalize_mp4_directories(input_dir: Path) -> tuple[int, int]:
             DEFAULT_MP4_NORMALIZATION_DIR_NAME,
         )
         target = target_dir / source.name
-        if not _needs_update(source, target):
+        target_lufs = _float_from_env("MEDIA_NORMALIZATION_MP4_TARGET_LUFS", -14.0)
+        if not _needs_normalization(source, target, mode=MP4_NORMALIZATION_VERSION, target_value=target_lufs):
             skipped += 1
             continue
         try:
