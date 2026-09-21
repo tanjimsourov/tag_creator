@@ -43,10 +43,92 @@ def _float_from_env(name: str, default: float) -> float:
         return default
 
 
-def _normalization_dir_for(path: Path, env_name: str, default: str) -> Path:
+def _normalization_dir_name(env_name: str, default: str) -> str:
     legacy = os.getenv("MEDIA_NORMALIZATION_DIR_NAME", "").strip()
-    directory_name = os.getenv(env_name, "").strip() or legacy or default
-    return path.parent / directory_name
+    return os.getenv(env_name, "").strip() or legacy or default
+
+
+def _normalization_output_scope() -> str:
+    return os.getenv("MEDIA_NORMALIZATION_OUTPUT_SCOPE", "input-root").strip().lower().replace("_", "-")
+
+
+def _list_from_env(name: str) -> set[str]:
+    raw = os.getenv(name, "")
+    return {
+        value.strip().casefold()
+        for chunk in raw.split(";")
+        for value in chunk.split(",")
+        if value.strip()
+    }
+
+
+def _should_flatten_input_root(input_dir: Path) -> bool:
+    roots = _list_from_env("MEDIA_NORMALIZATION_FLATTEN_ROOTS")
+    return "*" in roots or input_dir.name.casefold() in roots
+
+
+def _safe_filename_part(value: str) -> str:
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "_", value).strip(" ._")
+    return cleaned or "folder"
+
+
+def _normalization_target_for(source: Path, input_dir: Path, env_name: str, default: str) -> Path:
+    directory_name = _normalization_dir_name(env_name, default)
+    if _should_flatten_input_root(input_dir):
+        return input_dir / directory_name / source.name
+    scope = _normalization_output_scope()
+    if scope in {"media-folder", "media-parent", "next-to-source", "source-parent"}:
+        return source.parent / directory_name / source.name
+    try:
+        relative = source.relative_to(input_dir)
+    except ValueError:
+        relative = Path(source.name)
+    return input_dir / directory_name / relative
+
+
+def _dedupe_target_path(source: Path, input_dir: Path, target: Path, used_targets: dict[str, Path]) -> Path:
+    key = str(target).casefold()
+    existing_source = used_targets.get(key)
+    if existing_source is None or existing_source == source:
+        used_targets[key] = source
+        return target
+
+    try:
+        relative_parent = source.relative_to(input_dir).parent
+    except ValueError:
+        relative_parent = Path()
+    prefix = " - ".join(_safe_filename_part(part) for part in relative_parent.parts)
+    candidate_name = f"{prefix} - {source.name}" if prefix else source.name
+    candidate = target.with_name(candidate_name)
+    counter = 2
+    while str(candidate).casefold() in used_targets and used_targets[str(candidate).casefold()] != source:
+        candidate = target.with_name(f"{Path(candidate_name).stem} ({counter}){source.suffix}")
+        counter += 1
+    used_targets[str(candidate).casefold()] = source
+    return candidate
+
+
+def _cleanup_legacy_per_folder_normalization_dirs(input_dir: Path, dirname: str) -> int:
+    if not _should_flatten_input_root(input_dir):
+        return 0
+    root_output = (input_dir / dirname).resolve()
+    removed = 0
+    for candidate in sorted(input_dir.rglob(dirname), reverse=True):
+        if not candidate.is_dir():
+            continue
+        try:
+            if candidate.resolve() == root_output:
+                continue
+        except OSError:
+            continue
+        try:
+            shutil.rmtree(candidate)
+            removed += 1
+        except OSError as exc:
+            LOGGER.warning("could not remove legacy normalization folder %s: %s", candidate, exc)
+    if removed:
+        LOGGER.info("removed legacy per-folder %s directories under %s: %s", dirname, input_dir, removed)
+    return removed
 
 
 def _is_inside_excluded_dir(path: Path, input_dir: Path) -> bool:
@@ -407,15 +489,20 @@ def normalize_mp3_directories(input_dir: Path) -> tuple[int, int]:
         return 0, 0
 
     LOGGER.info("mp3 normalization: found %s file(s) in %s", len(files), input_dir)
+    mp3_dirname = _normalization_dir_name("MEDIA_NORMALIZATION_MP3_DIR_NAME", DEFAULT_MP3_NORMALIZATION_DIR_NAME)
+    _cleanup_legacy_per_folder_normalization_dirs(input_dir, mp3_dirname)
     created = 0
     skipped = 0
+    used_targets: dict[str, Path] = {}
     for source in tqdm(files, desc="Normalizing MP3", unit="file", dynamic_ncols=True):
-        target_dir = _normalization_dir_for(
+        target = _normalization_target_for(
             source,
+            input_dir,
             "MEDIA_NORMALIZATION_MP3_DIR_NAME",
             DEFAULT_MP3_NORMALIZATION_DIR_NAME,
         )
-        target = target_dir / source.name
+        target = _dedupe_target_path(source, input_dir, target, used_targets)
+        target_dir = target.parent
         target_db = _float_from_env("MEDIA_NORMALIZATION_TARGET_DB", 89.0)
         mp3_mode = os.getenv("MEDIA_NORMALIZATION_MP3_MODE", "mp3gain").strip().lower()
         mode_version = MP3_NORMALIZATION_VERSION if mp3_mode in {"mp3gain", "mp3_gain", "replaygain", "replay_gain"} else MP3_LOUDNORM_VERSION
@@ -450,15 +537,20 @@ def normalize_mp4_directories(input_dir: Path) -> tuple[int, int]:
         return 0, 0
 
     LOGGER.info("mp4 normalization: found %s file(s) in %s", len(files), input_dir)
+    mp4_dirname = _normalization_dir_name("MEDIA_NORMALIZATION_MP4_DIR_NAME", DEFAULT_MP4_NORMALIZATION_DIR_NAME)
+    _cleanup_legacy_per_folder_normalization_dirs(input_dir, mp4_dirname)
     created = 0
     skipped = 0
+    used_targets: dict[str, Path] = {}
     for source in tqdm(files, desc="Normalizing MP4", unit="file", dynamic_ncols=True):
-        target_dir = _normalization_dir_for(
+        target = _normalization_target_for(
             source,
+            input_dir,
             "MEDIA_NORMALIZATION_MP4_DIR_NAME",
             DEFAULT_MP4_NORMALIZATION_DIR_NAME,
         )
-        target = target_dir / source.name
+        target = _dedupe_target_path(source, input_dir, target, used_targets)
+        target_dir = target.parent
         target_lufs = _float_from_env("MEDIA_NORMALIZATION_MP4_TARGET_LUFS", -14.0)
         if not _needs_normalization(source, target, mode=MP4_NORMALIZATION_VERSION, target_value=target_lufs):
             skipped += 1

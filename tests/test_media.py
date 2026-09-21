@@ -52,9 +52,9 @@ def test_normalize_mp3_directories_writes_copies_next_to_source(tmp_path, monkey
 
     assert created == 1
     assert skipped == 0
-    target = source.parent / "normalization-mp3" / "Track.mp3"
+    target = tmp_path / "normalization-mp3" / "Local Hero MP3" / "Track.mp3"
     assert target.read_bytes() == b"mp3"
-    assert (source.parent / "normalization-mp3" / "Track.mp3.normalization.json").exists()
+    assert (tmp_path / "normalization-mp3" / "Local Hero MP3" / "Track.mp3.normalization.json").exists()
     assert len(commands) == 1
     assert commands[0][0] == "mp3gain"
     assert "-d" in commands[0]
@@ -93,15 +93,15 @@ def test_normalize_media_directories_writes_mp3_and_mp4_outputs(tmp_path, monkey
 
     assert mp3_stats == (1, 0)
     assert mp4_stats == (1, 0)
-    assert (source_mp3.parent / "normalization-mp3" / "Track.mp3").read_bytes() == b"mp3"
-    assert (source_mp4.parent / "normalization-mp4" / "Clip.mp4").read_bytes() == b"normalized"
+    assert (tmp_path / "normalization-mp3" / "Mixed" / "Track.mp3").read_bytes() == b"mp3"
+    assert (tmp_path / "normalization-mp4" / "Mixed" / "Clip.mp4").read_bytes() == b"normalized"
 
 
 def test_normalize_mp3_reruns_old_output_without_metadata(tmp_path, monkeypatch):
     monkeypatch.setenv("MEDIA_NORMALIZATION_ENABLED", "true")
     monkeypatch.setenv("MEDIA_NORMALIZATION_MP3_MODE", "mp3gain")
     source = tmp_path / "Local Hero MP3" / "Track.mp3"
-    target = source.parent / "normalization-mp3" / "Track.mp3"
+    target = tmp_path / "normalization-mp3" / "Local Hero MP3" / "Track.mp3"
     source.parent.mkdir(parents=True)
     target.parent.mkdir(parents=True)
     source.write_bytes(b"mp3")
@@ -121,6 +121,67 @@ def test_normalize_mp3_reruns_old_output_without_metadata(tmp_path, monkeypatch)
     assert (created, skipped) == (1, 0)
     assert commands
     assert target.read_bytes() == b"mp3"
+
+
+def test_normalization_uses_one_root_output_folder_per_input_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEDIA_NORMALIZATION_ENABLED", "true")
+    monkeypatch.setenv("MEDIA_NORMALIZATION_MP3_MODE", "mp3gain")
+    monkeypatch.setenv("MEDIA_NORMALIZATION_OUTPUT_SCOPE", "input-root")
+    monkeypatch.delenv("MEDIA_NORMALIZATION_FLATTEN_ROOTS", raising=False)
+    first = tmp_path / "XtendaMix" / "Dance" / "One.mp4"
+    second = tmp_path / "XtendaMix" / "Pop" / "Two.mp4"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.write_bytes(b"mp4")
+    second.write_bytes(b"mp4")
+
+    def fake_run(command, **_kwargs):
+        if "ffprobe" in command[0]:
+            return SimpleNamespace(returncode=0, stdout="0\n", stderr="")
+        Path(command[-1]).write_bytes(b"normalized")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("tag_creator.normalization.subprocess.run", fake_run)
+
+    _mp3_stats, mp4_stats = normalize_media_directories(tmp_path / "XtendaMix")
+
+    assert mp4_stats == (2, 0)
+    assert (tmp_path / "XtendaMix" / "normalization-mp4" / "Dance" / "One.mp4").exists()
+    assert (tmp_path / "XtendaMix" / "normalization-mp4" / "Pop" / "Two.mp4").exists()
+    assert not (tmp_path / "XtendaMix" / "Dance" / "normalization-mp4").exists()
+    assert not (tmp_path / "XtendaMix" / "Pop" / "normalization-mp4").exists()
+
+
+def test_xtendamix_normalization_can_flatten_month_folders(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEDIA_NORMALIZATION_ENABLED", "true")
+    monkeypatch.setenv("MEDIA_NORMALIZATION_OUTPUT_SCOPE", "input-root")
+    monkeypatch.setenv("MEDIA_NORMALIZATION_FLATTEN_ROOTS", "XtendaMix")
+    first = tmp_path / "XtendaMix" / "Aug-26" / "Same.mp4"
+    second = tmp_path / "XtendaMix" / "Sep-26" / "Same.mp4"
+    old_nested = tmp_path / "XtendaMix" / "Aug-26" / "normalization-mp4" / "Old.mp4"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    old_nested.parent.mkdir(parents=True)
+    first.write_bytes(b"mp4")
+    second.write_bytes(b"mp4")
+    old_nested.write_bytes(b"old")
+
+    def fake_run(command, **_kwargs):
+        if "ffprobe" in command[0]:
+            return SimpleNamespace(returncode=0, stdout="0\n", stderr="")
+        Path(command[-1]).write_bytes(b"normalized")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("tag_creator.normalization.subprocess.run", fake_run)
+
+    _mp3_stats, mp4_stats = normalize_media_directories(tmp_path / "XtendaMix")
+
+    assert mp4_stats == (2, 0)
+    assert (tmp_path / "XtendaMix" / "normalization-mp4" / "Same.mp4").exists()
+    assert (tmp_path / "XtendaMix" / "normalization-mp4" / "Sep-26 - Same.mp4").exists()
+    assert not (tmp_path / "XtendaMix" / "normalization-mp4" / "Aug-26").exists()
+    assert not (tmp_path / "XtendaMix" / "normalization-mp4" / "Sep-26").exists()
+    assert not (tmp_path / "XtendaMix" / "Aug-26" / "normalization-mp4").exists()
 
 
 def test_write_and_read_back_mp3(sample_mp3):
