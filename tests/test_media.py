@@ -48,13 +48,13 @@ def test_normalize_mp3_directories_writes_copies_next_to_source(tmp_path, monkey
     monkeypatch.setattr("tag_creator.normalization.subprocess.run", fake_run)
     monkeypatch.setattr("tag_creator.normalization.shutil.which", lambda _value: "mp3gain")
 
-    created, skipped = normalize_mp3_directories(tmp_path)
+    (created, skipped), _mp4_stats = normalize_media_directories(tmp_path)
 
     assert created == 1
     assert skipped == 0
     target = tmp_path / "normalization-mp3" / "Local Hero MP3" / "Track.mp3"
     assert target.read_bytes() == b"mp3"
-    assert (tmp_path / "normalization-mp3" / "Local Hero MP3" / "Track.mp3.normalization.json").exists()
+    assert not (tmp_path / "normalization-mp3" / "Local Hero MP3" / "Track.mp3.normalization.json").exists()
     assert len(commands) == 1
     assert commands[0][0] == "mp3gain"
     assert "-d" in commands[0]
@@ -97,15 +97,52 @@ def test_normalize_media_directories_writes_mp3_and_mp4_outputs(tmp_path, monkey
     assert (tmp_path / "normalization-mp4" / "Mixed" / "Clip.mp4").read_bytes() == b"normalized"
 
 
-def test_normalize_mp3_reruns_old_output_without_metadata(tmp_path, monkeypatch):
+def test_mp3gain_failure_falls_back_to_ffmpeg_loudnorm(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEDIA_NORMALIZATION_ENABLED", "true")
+    monkeypatch.setenv("MEDIA_NORMALIZATION_MP3_MODE", "mp3gain")
+    monkeypatch.setenv("MEDIA_NORMALIZATION_MP3_FALLBACK", "ffmpeg")
+    source = tmp_path / "Music" / "Track.mp3"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"mp3")
+
+    commands: list[list[str]] = []
+
+    def fake_run(command, **_kwargs):
+        commands.append(command)
+        if command[0] == "mp3gain":
+            return SimpleNamespace(returncode=1, stdout="", stderr="mp3gain failed")
+        if "-f" in command and "null" in command:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="",
+                stderr='{"input_i":"-22.0","input_tp":"-2.0","input_lra":"7.0","input_thresh":"-32.0","target_offset":"4.0"}',
+            )
+        Path(command[-1]).write_bytes(b"ffmpeg-normalized")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("tag_creator.normalization.subprocess.run", fake_run)
+    monkeypatch.setattr("tag_creator.normalization.shutil.which", lambda _value: "mp3gain")
+
+    created, skipped = normalize_mp3_directories(tmp_path)
+
+    assert (created, skipped) == (1, 0)
+    assert commands[0][0] == "mp3gain"
+    assert commands[1][0] != "mp3gain"
+    assert (tmp_path / "normalization-mp3" / "Music" / "Track.mp3").read_bytes() == b"ffmpeg-normalized"
+
+
+def test_normalize_mp3_cleans_old_normalization_json_sidecars(tmp_path, monkeypatch):
     monkeypatch.setenv("MEDIA_NORMALIZATION_ENABLED", "true")
     monkeypatch.setenv("MEDIA_NORMALIZATION_MP3_MODE", "mp3gain")
     source = tmp_path / "Local Hero MP3" / "Track.mp3"
     target = tmp_path / "normalization-mp3" / "Local Hero MP3" / "Track.mp3"
+    sidecar = tmp_path / "normalization-mp3" / "Local Hero MP3" / "Track.mp3.normalization.json"
     source.parent.mkdir(parents=True)
     target.parent.mkdir(parents=True)
     source.write_bytes(b"mp3")
-    target.write_bytes(b"old-normalized")
+    target.write_bytes(b"mp3")
+    sidecar.write_text("{}", encoding="utf-8")
+    target.touch()
 
     commands: list[list[str]] = []
 
@@ -116,11 +153,12 @@ def test_normalize_mp3_reruns_old_output_without_metadata(tmp_path, monkeypatch)
     monkeypatch.setattr("tag_creator.normalization.subprocess.run", fake_run)
     monkeypatch.setattr("tag_creator.normalization.shutil.which", lambda _value: "mp3gain")
 
-    created, skipped = normalize_mp3_directories(tmp_path)
+    (created, skipped), _mp4_stats = normalize_media_directories(tmp_path)
 
-    assert (created, skipped) == (1, 0)
-    assert commands
+    assert (created, skipped) == (0, 1)
+    assert not commands
     assert target.read_bytes() == b"mp3"
+    assert not sidecar.exists()
 
 
 def test_normalization_uses_one_root_output_folder_per_input_dir(tmp_path, monkeypatch):
